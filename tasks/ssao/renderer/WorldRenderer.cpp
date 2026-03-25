@@ -18,15 +18,9 @@ WorldRenderer::WorldRenderer(const InitInfo& info)
   , antialiasingModule()
   , lightModule()
   , staticMeshesRenderModule()
-  , terrainGeneratorModule()
-  , terrainRenderModule()
-  , tonemappingModule()
-  , waterGeneratorModule()
-  , waterRenderModule()
   , renderTargetFormat(info.renderTargetFormat)
   , params({})
   , wireframeEnabled(info.wireframeEnabled)
-  , tonemappingEnabled(info.tonemappingEnabled)
   , timeStopped(info.timeStopped)
   , taaEnabled(info.taaEnabled)
   , ssaoEnabled(info.ssaoEnabled)
@@ -102,15 +96,6 @@ void WorldRenderer::allocateResources(glm::uvec2 swapchain_resolution)
       .depthFormat = vk::Format::eD32Sfloat});
   lightModule.allocateResources();
   staticMeshesRenderModule.allocateResources();
-  terrainGeneratorModule.allocateResources(
-    TerrainGeneratorModule::AllocationInfo{
-      .mapFormat = vk::Format::eR32Sfloat, .extent = {4096, 4096, 1}});
-  terrainRenderModule.allocateResources();
-  tonemappingModule.allocateResources();
-  waterGeneratorModule.allocateResources(
-    WaterGeneratorModule::AllocationInfo{
-      .texturesExtent = 1024, .texturesFormat = vk::Format::eR32G32B32A32Sfloat});
-  waterRenderModule.allocateResources();
 }
 
 void WorldRenderer::loadScene(std::filesystem::path path, float near_plane, float far_plane)
@@ -132,11 +117,7 @@ void WorldRenderer::loadScene(std::filesystem::path path, float near_plane, floa
 
 void WorldRenderer::loadInfo()
 {
-  terrainGeneratorModule.execute();
-
   staticMeshesRenderModule.loadSet();
-
-  lightModule.loadMaps(terrainGeneratorModule.getBindings(vk::ImageLayout::eGeneral));
 
   lightModule.loadLights(
     // {Light{.pos = {0, 1, 0}, .radius = 0,  .color = {1, 1, 1}, .intensity = 15},
@@ -166,13 +147,6 @@ void WorldRenderer::loadInfo()
           .color = glm::vec3{1, 0.694, 0.32}},
       .planes = planes,
       .shadowMapSize = static_cast<float>(gBuffer->getShadowTextureExtent().width)});
-
-  lightModule.displaceLights();
-
-  terrainRenderModule.loadMaps(
-    terrainGeneratorModule.getBindings(vk::ImageLayout::eShaderReadOnlyOptimal));
-
-  waterGeneratorModule.executeStart();
 }
 
 void WorldRenderer::loadShaders()
@@ -181,11 +155,6 @@ void WorldRenderer::loadShaders()
   antialiasingModule.loadShaders();
   lightModule.loadShaders();
   staticMeshesRenderModule.loadShaders();
-  terrainGeneratorModule.loadShaders();
-  terrainRenderModule.loadShaders();
-  tonemappingModule.loadShaders();
-  waterGeneratorModule.loadShaders();
-  waterRenderModule.loadShaders();
 
   etna::create_program(
     "deferred_shading",
@@ -206,21 +175,6 @@ void WorldRenderer::setupRenderPipelines()
      gBuffer->getVelocityTexture().getFormat()},
     gBuffer->getDepthTexture().getFormat(),
     gBuffer->getShadowTextureFormat());
-  terrainGeneratorModule.setupPipelines();
-  terrainRenderModule.setupPipelines(
-    wireframeEnabled,
-    {renderTargetFormat,
-     gBuffer->getNormalTexture().getFormat(),
-     gBuffer->getMaterialTexture().getFormat(),
-     gBuffer->getVelocityTexture().getFormat()},
-    gBuffer->getDepthTexture().getFormat(),
-    gBuffer->getShadowTextureFormat());
-  tonemappingModule.setupPipelines();
-  waterGeneratorModule.setupPipelines();
-  waterRenderModule.setupPipelines(
-    wireframeEnabled,
-    {renderTargetFormat, gBuffer->getVelocityTexture().getFormat()},
-    gBuffer->getDepthTexture().getFormat());
 
   auto& pipelineManager = etna::get_context().getPipelineManager();
 
@@ -402,32 +356,11 @@ void WorldRenderer::renderWorld(vk::CommandBuffer cmd_buf, vk::Image target_imag
       currentHeavyRenderInfo.data(), &renderPacket.heavyInfo, sizeof(RenderPacket::HeavyInfo));
     currentHeavyRenderInfo.unmap();
 
+
+
     lightModule.prepareForDraw();
 
     ssaoModule.prepareForExecute(params.proj, params.invProj, params.invView);
-
-    if (!timeStopped)
-    {
-      waterGeneratorModule.executeProgress(cmd_buf, renderPacket.time);
-    }
-
-    etna::set_state(
-      cmd_buf,
-      waterGeneratorModule.getHeightMap().get(),
-      vk::PipelineStageFlagBits2::eTessellationControlShader |
-        vk::PipelineStageFlagBits2::eTessellationEvaluationShader |
-        vk::PipelineStageFlagBits2::eFragmentShader,
-      vk::AccessFlagBits2::eShaderSampledRead,
-      vk::ImageLayout::eShaderReadOnlyOptimal,
-      vk::ImageAspectFlagBits::eColor);
-
-    etna::set_state(
-      cmd_buf,
-      waterGeneratorModule.getNormalMap().get(),
-      vk::PipelineStageFlagBits2::eTessellationEvaluationShader,
-      vk::AccessFlagBits2::eShaderSampledRead,
-      vk::ImageLayout::eShaderReadOnlyOptimal,
-      vk::ImageAspectFlagBits::eColor);
 
     gBuffer->prepareForRender(cmd_buf);
 
@@ -442,29 +375,15 @@ void WorldRenderer::renderWorld(vk::CommandBuffer cmd_buf, vk::Image target_imag
           gBuffer->getShadowTextureExtent(),
           lightModule.getShadowCastingDirLightMatrixBinding(i),
           gBuffer->genShadowMappingAttachmentParams(i));
-
-        terrainRenderModule.executeShadowMapping(
-          cmd_buf,
-          renderPacket,
-          gBuffer->getShadowTextureExtent(),
-          lightModule.getShadowCastingDirLightMatrixBinding(i),
-          gBuffer->genShadowMappingAttachmentParams(i, vk::AttachmentLoadOp::eLoad));
       }
     }
-
-    terrainRenderModule.executeRender(
-      cmd_buf,
-      renderPacket,
-      currentHeavyRenderInfo,
-      gBuffer->genColorAttachmentParams(),
-      gBuffer->genDepthAttachmentParams());
 
     staticMeshesRenderModule.executeRender(
       cmd_buf,
       renderPacket,
       currentHeavyRenderInfo,
-      gBuffer->genColorAttachmentParams(vk::AttachmentLoadOp::eLoad),
-      gBuffer->genDepthAttachmentParams(vk::AttachmentLoadOp::eLoad));
+      gBuffer->genColorAttachmentParams(),
+      gBuffer->genDepthAttachmentParams());
 
     if (ssaoEnabled)
     {
@@ -505,31 +424,6 @@ void WorldRenderer::renderWorld(vk::CommandBuffer cmd_buf, vk::Image target_imag
       deferredShading(cmd_buf, currentConstants, deferredShadingPipeline.getVkPipelineLayout());
     }
 
-    gBuffer->prepareForDepthReadWrite(cmd_buf);
-
-    etna::flush_barriers(cmd_buf);
-
-    waterRenderModule.executeRender(
-      cmd_buf,
-      renderPacket,
-      currentHeavyRenderInfo,
-      params.view,
-      params.invView,
-      {{.image = renderTarget.get(),
-        .view = renderTarget.getView({}),
-        .loadOp = vk::AttachmentLoadOp::eLoad},
-       {.image = gBuffer->getVelocityTexture().get(),
-        .view = gBuffer->getVelocityTexture().getView({}),
-        .loadOp = vk::AttachmentLoadOp::eLoad}},
-      gBuffer->genDepthAttachmentParams(vk::AttachmentLoadOp::eLoad),
-      waterGeneratorModule.getHeightMap(),
-      waterGeneratorModule.getNormalMap(),
-      waterGeneratorModule.getSampler(),
-      gBuffer->getShadowTextures(),
-      gBuffer->getDepthSampler(),
-      lightModule.getShadowCastingDirLightInfoBuffer(),
-      cubemapTexture);
-
     if (taaEnabled)
     {
       etna::set_state(
@@ -554,11 +448,6 @@ void WorldRenderer::renderWorld(vk::CommandBuffer cmd_buf, vk::Image target_imag
         gBuffer->getVelocityTexture(),
         renderPacket,
         params.invProjView);
-    }
-
-    if (tonemappingEnabled)
-    {
-      tonemappingModule.execute(cmd_buf, renderTarget, resolution);
     }
 
     etna::set_state(
@@ -624,7 +513,6 @@ void WorldRenderer::drawGui()
 
   ImGui::SeparatorText("Configuration");
 
-  ImGui::Checkbox("Enable Tonemapping", &tonemappingEnabled);
   ImGui::Checkbox("Enable TAA", &taaEnabled);
 
   if (ImGui::Checkbox("Enable SSAO", &ssaoEnabled))
@@ -638,10 +526,6 @@ void WorldRenderer::drawGui()
   antialiasingModule.drawGui();
   lightModule.drawGui();
   staticMeshesRenderModule.drawGui();
-  terrainGeneratorModule.drawGui();
-  terrainRenderModule.drawGui();
-  waterGeneratorModule.drawGui();
-  waterRenderModule.drawGui();
 
   ImGui::SeparatorText("Shadow Settings");
 

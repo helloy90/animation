@@ -77,7 +77,6 @@ void Renderer::initFrameDelivery(vk::UniqueSurfaceKHR a_surface, ResolutionProvi
     .renderTargetFormat = vk::Format::eB10G11R11UfloatPack32,
     .shadowCascadesAmount = 4,
     .wireframeEnabled = false,
-    .tonemappingEnabled = false,
     .timeStopped = false,
     .taaEnabled = true,
     .ssaoEnabled = true});

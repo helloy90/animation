@@ -939,7 +939,7 @@ void SceneManager::uploadData(
   transferHelper.uploadBuffer<Mesh>(*oneShotCommands, unifiedMeshesbuf, 0, std::span(meshes));
 
   // TODO - fix hardcode in matrices init
-  updateMatrices(glm::translate(glm::identity<glm::mat4>(), glm::vec3(45, -20, -100)));
+  updateMatrices(glm::translate(glm::identity<glm::mat4>(), glm::vec3(0, -0, -0)));
 
   transferHelper.uploadBuffer<std::uint32_t>(
     *oneShotCommands, unifiedInstanceMeshesbuf, 0, std::span(instanceMeshes));
@@ -1061,15 +1061,6 @@ void SceneManager::selectBakedScene(std::filesystem::path path)
 
   auto [instMats, instMeshes] = processInstances(model);
   instanceMatrices = std::move(instMats);
-
-  // TODO - fix hardcode for lighthouse model
-  float scale = 0.5f;
-  for (auto& matrix : instanceMatrices)
-  {
-    matrix[0][0] *= scale;
-    matrix[1][1] *= scale;
-    matrix[2][2] *= scale;
-  }
 
   instanceMeshes = std::move(instMeshes);
 

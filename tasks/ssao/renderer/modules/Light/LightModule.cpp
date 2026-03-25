@@ -195,7 +195,6 @@ void LightModule::prepareForDraw()
   shadowCastingDirLights->prepareForDraw();
 }
 
-
 void LightModule::drawGui()
 {
   ImGui::Begin("Application Settings");

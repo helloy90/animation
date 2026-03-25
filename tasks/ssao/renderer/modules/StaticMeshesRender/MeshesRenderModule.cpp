@@ -243,7 +243,6 @@ void MeshesRenderModule::drawGui()
   if (translationChanged)
   {
     ETNA_CHECK_VK_RESULT(etna::get_context().getDevice().waitIdle());
-    sceneMgr->updateMatrices(info.translation);
     translationChanged = false;
   }
 

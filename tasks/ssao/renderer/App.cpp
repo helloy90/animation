@@ -46,7 +46,7 @@ App::App()
 
   renderer->initFrameDelivery(std::move(surface), [this]() { return mainWindow->getResolution(); });
 
-  mainCam.lookAt({0, 20, 0}, {10, 0, 10}, {0, 1, 0});
+  mainCam.lookAt({1, 1, 1}, {0, 0, 0}, {0, 1, 0});
 
   // note - maybe bad (see shadowmap)
   ImGuiRenderer::enableImGuiForWindow(mainWindow->native());

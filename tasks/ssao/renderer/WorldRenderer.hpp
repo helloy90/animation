@@ -40,7 +40,6 @@ public:
     uint32_t shadowCascadesAmount;
 
     bool wireframeEnabled;
-    bool tonemappingEnabled;
     bool timeStopped;
     bool taaEnabled;
     bool ssaoEnabled;
@@ -76,11 +75,6 @@ private:
   AntialiasingModule antialiasingModule;
   LightModule lightModule;
   MeshesRenderModule staticMeshesRenderModule;
-  TerrainGeneratorModule terrainGeneratorModule;
-  TerrainRenderModule terrainRenderModule;
-  TonemappingModule tonemappingModule;
-  WaterGeneratorModule waterGeneratorModule;
-  WaterRenderModule waterRenderModule;
 
   std::vector<float> planes;
 
@@ -101,7 +95,6 @@ private:
   etna::GraphicsPipeline deferredShadingPipeline;
 
   bool wireframeEnabled;
-  bool tonemappingEnabled;
   bool timeStopped;
   bool taaEnabled;
   bool ssaoEnabled;
