@@ -1,0 +1,35 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Light.h"
+#include "LightParams.h"
+
+layout(local_size_x = 32) in;
+
+layout(set = 0, binding = 0, r32f) uniform image2D heightMap;
+layout(set = 0, binding = 1, r32f) uniform image2D normalMap;
+
+layout(set = 1, binding = 0) readonly uniform params_t
+{
+  LightParams params;
+};
+
+layout(set = 1, binding = 1) buffer lights
+{
+  Light lightsBuffer[];
+};
+
+void main()
+{
+  uint index = uint(gl_GlobalInvocationID.x);
+  if (index >= params.lightsAmount)
+  {
+    return;
+  }
+
+  ivec2 lightPosOnTerrainMap = ivec2(lightsBuffer[index].pos.xz);
+
+  float height = imageLoad(heightMap, lightPosOnTerrainMap).x;
+
+  lightsBuffer[index].pos.y += height + 1;
+}

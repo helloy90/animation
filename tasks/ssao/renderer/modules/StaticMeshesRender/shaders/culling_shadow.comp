@@ -1,0 +1,145 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "MeshesParams.h"
+
+layout(local_size_x = 128) in;
+
+struct RenderElement
+{
+  uint vertexOffset;
+  uint indexOffset;
+  uint indexCount;
+  uint material;
+};
+
+struct Bounds
+{
+  vec3 minPos;
+  uint _padding0;
+  vec3 maxPos;
+  uint _padding1;
+};
+
+struct Mesh
+{
+  uint firstRelem;
+  uint relemCount;
+};
+
+struct vkDrawIndexedIndirectCommand
+{
+  uint indexCount;
+  uint instanceCount;
+  uint firstIndex;
+  int vertexOffset;
+  uint firstInstance;
+};
+
+layout(binding = 0) buffer relems_t
+{
+  RenderElement relems[];
+};
+layout(binding = 1) buffer bounds_t
+{
+  Bounds bounds[];
+};
+layout(binding = 2) buffer meshes_t
+{
+  Mesh meshes[];
+};
+layout(binding = 3) buffer instance_meshes_t
+{
+  uint instanceMeshes[];
+};
+layout(binding = 4) buffer instance_matrices_t
+{
+  mat4 instanceMatrices[];
+};
+layout(binding = 5) buffer relem_instance_offsets_t
+{
+  uint relemInstanceOffsets[];
+};
+layout(binding = 6) buffer draw_instance_indices_t
+{
+  uint drawInstanceIndices[];
+};
+layout(binding = 7) buffer draw_commands_t
+{
+  vkDrawIndexedIndirectCommand drawCommands[];
+};
+
+layout(binding = 8) uniform params_t
+{
+  MeshesParams params;
+};
+
+layout(binding = 9) readonly buffer proj_view_t
+{
+  mat4 projView;
+};
+
+// layout(push_constant) uniform push_constant_t
+// {
+//   mat4 translation;
+// };
+
+
+bool within(float left, float value, float right)
+{
+  return (left <= value) && (value <= right);
+}
+
+void main()
+{
+  uint instanceIdx = gl_GlobalInvocationID.x;
+
+  if (instanceIdx >= params.instancesCount)
+  {
+    return;
+  }
+
+  // maybe its better to use for loop here for instance index 0
+  if (instanceIdx < params.relemsCount)
+  {
+    drawCommands[instanceIdx].instanceCount = 0;
+  }
+  memoryBarrierBuffer();
+
+  uint currentMeshInstance = instanceMeshes[instanceIdx];
+  Mesh currentMesh = meshes[currentMeshInstance];
+
+  for (uint relemIdx = currentMesh.firstRelem;
+       relemIdx < currentMesh.firstRelem + currentMesh.relemCount;
+       relemIdx++)
+  {
+    bool visible = false;
+
+    vec3 currentMinPos = bounds[relemIdx].minPos;
+    vec3 currentMaxPos = bounds[relemIdx].maxPos;
+
+    vec4 corners[8] = {
+      {currentMaxPos.x, currentMaxPos.y, currentMaxPos.z, 1.0},
+      {currentMinPos.x, currentMaxPos.y, currentMaxPos.z, 1.0},
+      {currentMaxPos.x, currentMinPos.y, currentMaxPos.z, 1.0},
+      {currentMaxPos.x, currentMaxPos.y, currentMinPos.z, 1.0},
+      {currentMinPos.x, currentMinPos.y, currentMaxPos.z, 1.0},
+      {currentMinPos.x, currentMaxPos.y, currentMinPos.z, 1.0},
+      {currentMaxPos.x, currentMinPos.y, currentMinPos.z, 1.0},
+      {currentMinPos.x, currentMinPos.y, currentMinPos.z, 1.0}};
+
+    for (uint i = 0; i < 8; i++)
+    {
+      vec4 corner = projView * (instanceMatrices[instanceIdx] * corners[i]);
+
+      visible = visible || within(-corner.w, corner.x, corner.w) ||
+        within(-corner.w, corner.y, corner.w) || within(0.0, corner.z, corner.w);
+    }
+
+    if (visible)
+    {
+      uint drawInstance = atomicAdd(drawCommands[relemIdx].instanceCount, 1);
+      drawInstanceIndices[relemInstanceOffsets[relemIdx] + drawInstance] = instanceIdx;
+    }
+  }
+}

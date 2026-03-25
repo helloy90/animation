@@ -1,0 +1,154 @@
+#version 460
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+#include "TerrainGenerationParams.h"
+
+layout(binding = 0, r32f) writeonly uniform image2D heightMap;
+layout(binding = 1, rgba16_snorm) writeonly uniform image2D normalMap;
+
+layout(binding = 2) uniform params
+{
+  TerrainGenerationParams genParams;
+};
+
+// Inspired by Acerola video "Intro To Terrain Generation"
+
+const float kPi = 3.141592653589793238462;
+
+// UE4 rng
+float pseudoGenerator(vec2 vector)
+{
+  vector = fract(vector / 128.0) * 128.0 + vec2(-64.340622, -72.465622);
+  return fract(dot(vector.xyx * vector.xyy, vec3(20.390625, 60.703125, 2.4281209)));
+}
+
+float hashedPosition(vec2 pos)
+{
+  return pseudoGenerator(pos * vec2(genParams.seed, genParams.seed + 4.0));
+}
+
+vec2 randomVector(float seed)
+{
+  float theta = seed * 360.0 * 2.0 - 360.0;
+  theta += genParams.gradientRotation;
+  theta = theta * kPi / 180.0;
+  return normalize(vec2(cos(theta), sin(theta)));
+}
+
+vec2 quintic(vec2 x)
+{
+  return x * x * x * (x * (x * vec2(6) - vec2(15)) + vec2(10));
+}
+
+vec2 quinticDerivative(vec2 x)
+{
+  return vec2(30) * x * x * (x * (x - vec2(2)) + vec2(1));
+}
+
+vec3 perlinNoise(vec2 pos)
+{
+  vec2 gridPositionMin = floor(pos);
+  vec2 gridPositionMax = ceil(pos);
+
+  vec2 remainder = fract(pos);
+
+  vec2 corner00 = gridPositionMin;
+  vec2 corner01 = vec2(gridPositionMin.x, gridPositionMax.y);
+  vec2 corner10 = vec2(gridPositionMax.x, gridPositionMin.y);
+  vec2 corner11 = gridPositionMax;
+
+  vec2 gradient00 = randomVector(hashedPosition(corner00));
+  vec2 gradient01 = randomVector(hashedPosition(corner01));
+  vec2 gradient10 = randomVector(hashedPosition(corner10));
+  vec2 gradient11 = randomVector(hashedPosition(corner11));
+
+  vec2 positiveDir = remainder;
+  vec2 negativeDir = positiveDir - vec2(1.0);
+
+  vec2 dirFrom00 = positiveDir;
+  vec2 dirFrom01 = vec2(positiveDir.x, negativeDir.y);
+  vec2 dirFrom10 = vec2(negativeDir.x, positiveDir.y);
+  vec2 dirFrom11 = negativeDir;
+
+  vec2 inter = quintic(remainder);
+  vec2 dInter = quinticDerivative(remainder);
+
+  float val00 = dot(gradient00, dirFrom00);
+  float val01 = dot(gradient01, dirFrom01);
+  float val10 = dot(gradient10, dirFrom10);
+  float val11 = dot(gradient11, dirFrom11);
+
+  // https://iquilezles.org/articles/gradientnoise/
+  float noise = val00 + inter.x * (val10 - val00) + inter.y * (val01 - val00) +
+    inter.x * inter.y * (val00 + val11 - val01 - val10);
+
+  vec2 noiseGradient = gradient00 + inter.x * (gradient10 - gradient00) +
+    inter.y * (gradient01 - gradient00) +
+    inter.x * inter.y * (gradient00 + gradient11 - gradient01 - gradient10) +
+    dInter * (inter.yx * (val00 + val11 - val01 - val10) + vec2(val10, val01) - val00);
+
+  return vec3(noise, noiseGradient);
+}
+
+vec3 accumulatedNoise(vec2 pos)
+{
+  float lacunarity = genParams.lacunarity;
+  float amplitude = genParams.initialAmplitude;
+
+  float height = 0.0;
+  vec2 gradient = vec2(0.0);
+
+  mat2 accumulatedRotation = mat2(1.0, 0.0, 0.0, 1.0);
+
+  for (uint i = 0; i < genParams.numberOfSamples; i++)
+  {
+    vec3 noise = perlinNoise(pos);
+
+    height += amplitude * noise.x;
+
+    gradient += amplitude * accumulatedRotation * noise.yz;
+
+    amplitude *= genParams.amplitudeDecay;
+
+    float angleVariance = mix(
+      genParams.angleVariance.x,
+      genParams.angleVariance.y,
+      hashedPosition(vec2(i * 419, genParams.seed)));
+    float theta = (genParams.noiseRotation + angleVariance) * kPi / 180.0;
+
+    mat2 rotation = mat2(cos(theta), -sin(theta), sin(theta), cos(theta));
+
+    mat2 inverseRotation = inverse(rotation);
+
+    float frequencyVariance = mix(
+      genParams.frequencyVariance.x,
+      genParams.frequencyVariance.y,
+      hashedPosition(vec2(i * 422, genParams.seed)));
+
+    pos = (lacunarity + frequencyVariance) * rotation * pos;
+    accumulatedRotation = (lacunarity + frequencyVariance) * inverseRotation * accumulatedRotation;
+  }
+
+  return vec3(height, gradient);
+}
+
+void main()
+{
+  ivec2 texCoord = ivec2(gl_GlobalInvocationID.xy);
+  vec2 heightMapSize = vec2(imageSize(heightMap));
+  if (texCoord.x >= heightMapSize.x || texCoord.y >= heightMapSize.y)
+  {
+    return;
+  }
+
+  vec2 pos = (vec2(texCoord) + genParams.offset) / genParams.scale;
+
+  vec3 result = accumulatedNoise(pos) * genParams.heightAmplifier;
+
+  imageStore(heightMap, texCoord, vec4(result.x + genParams.heightAmplifier + genParams.heightOffset));
+
+  imageStore(normalMap, texCoord, vec4(normalize(vec3(-result.y, 1, -result.z)), 0.0));
+}

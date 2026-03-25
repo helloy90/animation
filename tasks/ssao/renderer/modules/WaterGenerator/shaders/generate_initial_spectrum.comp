@@ -1,0 +1,193 @@
+#version 460
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_GOOGLE_include_directive : require
+
+#include "SpectrumGenerationParams.h"
+#include "GeneralSpectrumParams.h"
+#include "complex.glsl"
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(binding = 0, rgba32f) writeonly uniform image2D spectrumTex;
+
+layout(binding = 1) readonly buffer params_t {
+    SpectrumGenerationParams paramsArray[];
+};
+layout(binding = 2) readonly uniform general_params_t {
+    GeneralSpectrumParams generalParams;
+};
+
+layout(binding = 3) readonly uniform info_t {
+    uint size;
+    uint steps;
+    uint texturesAmount;
+};
+
+layout(binding = 4) readonly buffer sizes_t {
+    uint patchSizes[];
+};
+
+// using this as a uniform distribution number gnerator
+float hash(uint n) 
+{
+	n = (n << 13U) ^ n;
+    n = n * (n * n * 15731U + 789221U) + 1376312589U;
+    return float(n & uint(0x7fffffffU))/float(0x7fffffff);
+}
+
+// using Box - Muller here
+vec2 uniformToGaussian(float uniFirst, float uniSecond) {
+    float root = sqrt(-2.0 * log(uniFirst));
+    float theta = kTwoPi * uniSecond;
+    return vec2(root * cos(theta), root * sin(theta));
+}
+
+// see https://arxiv.org/pdf/2503.03326 p.7-9, https://www.sci-hub.ru/10.1145/2791261.2791267 p.34-36
+float dispersion(float lengthK) {
+    return sqrt(generalParams.gravity * lengthK * tanh(min(lengthK * generalParams.depth, 20)));
+}
+
+float dispersionDerivative(float lengthK) {
+    float th = tanh(min(lengthK * generalParams.depth, 20.0));
+    float ch = cosh(lengthK * generalParams.depth);
+    return generalParams.gravity * (generalParams.depth * lengthK / ch / ch + th) / 2.0 / dispersion(lengthK);
+}
+
+float normalizationFactor(float spread) {
+    float spreadSq = spread * spread;
+    float spreadCu = spreadSq * spread;
+    float spread4 = spreadCu * spread;
+    if (spread < 5.0) {
+        return -0.000564 * spread4 + 0.00776 * spreadCu - 0.044 * spreadSq + 0.192 * spread + 0.163;
+    }
+    return -4.80e-08 * spread4 + 1.07e-05 * spreadCu - 9.53e-04 * spreadSq + 5.90e-02 * spread + 3.93e-01;
+}
+
+float swellSpectrum(float theta, float spread, SpectrumGenerationParams params) {
+    return normalizationFactor(spread) * pow(abs(cos(0.5 * theta)), 2.0 * spread);
+}
+
+float spreadPower(float omega, SpectrumGenerationParams params) {
+    if (omega > params.peakFrequency) {
+        return 9.77 * pow(abs(omega / params.peakFrequency), -2.5);
+    }
+    return 6.97 * pow(abs(omega / params.peakFrequency), 5.0);
+}
+
+float directionalSpectrum(float theta, float omega, SpectrumGenerationParams params) {
+    float spread = spreadPower(omega, params) + 16.0 * tanh(min(omega / params.peakFrequency, 20.0)) * params.swell * params.swell;
+    return mix(2.0 / kPi * cos(theta) * cos(theta), swellSpectrum(theta - params.angle, spread, params), params.spreadBlend);
+}
+
+float tmaCorrection(float omega) {
+    float omegaH = omega * sqrt(generalParams.depth / generalParams.gravity);
+    if (omegaH <= 1.0) {
+        return 0.5 * omegaH * omegaH;
+    }
+    if (omega < 2.0) {
+        return 1.0 - 0.5 * (2.0 - omegaH) * (2.0 - omegaH);
+    }
+    return 1.0;
+}
+
+float jonswap(float omega, SpectrumGenerationParams params) {
+    float sigma = (omega <= params.peakFrequency ? 0.07 : 0.09);
+    float r = exp(-(omega - params.peakFrequency) * (omega - params.peakFrequency) / 2.0 / sigma / sigma / params.peakFrequency / params.peakFrequency);
+    float omegaRcp = 1.0 / omega;
+    float peakFrequencyOverOmega = params.peakFrequency / omega;
+
+    return params.scale * tmaCorrection(omega) * params.jonswapAlpha * generalParams.gravity * generalParams.gravity
+            * omegaRcp * omegaRcp * omegaRcp * omegaRcp * omegaRcp
+            * exp(-1.25 * peakFrequencyOverOmega * peakFrequencyOverOmega * peakFrequencyOverOmega * peakFrequencyOverOmega)
+            * pow(abs(params.peakEnhancement), r);
+}
+
+float shortWavesFade(float lengthK, SpectrumGenerationParams params) {
+    return exp(-params.shortWavesFade * params.shortWavesFade * lengthK * lengthK);
+}
+
+// float donelanBannerBeta(float x) {
+//     if (x < 0.95) {
+//         return 2.61 * pow(abs(x), 1.3);
+//     }
+//     if (x < 1.6) {
+//         return 2.28 * pow(abs(x), -1.3);
+//     }
+
+//     float eps = -0.4 + 0.8393 * exp(-0.567 * log(x * x));
+//     return pow(10.0, eps);
+// }
+
+// float donelanBanner(float theta, float omega, float peakFrequency) {
+//     float beta = donelanBannerBeta(omega / peakFrequency);
+//     float sech = 1.0 / cosh(beta * theta);
+
+//     return beta / (2.0 * tanh(beta * kPi) * sech * sech);
+// }
+
+// float phillipsSpectrum(vec2 k) {
+//     float lengthK = length(k);
+//     if (lengthK < 0.00001) {
+//         return 0.0;
+//     }
+//     // variables are exactly as in paper (GPGPU FFT Ocean Simulation p.17)
+//     float A = 5;
+//     float V = 20;
+//     float L = V * V / 9.81;
+//     vec2 w = normalize(vec2(1, 1));
+//     float kdotw = dot(normalize(k), w);
+
+//     return A * (exp(-1.0 / ((lengthK * L) * (lengthK * L))) / (lengthK * lengthK * lengthK * lengthK)) * kdotw * kdotw;
+// }
+
+// vec2 spectrumAmplitude(vec2 k, vec2 rands) {
+//     return rands * sqrt(phillipsSpectrum(k) / 2.0);
+// }
+
+void main(void) {
+    ivec2 texCoord = ivec2(gl_GlobalInvocationID.xy);
+    uvec2 spectrumTexSize = imageSize(spectrumTex);
+    if (texCoord.x >= spectrumTexSize.x || texCoord.y >= spectrumTexSize.y) {
+        return;
+    }
+
+    vec2 center = vec2(spectrumTexSize) / 2.0;
+    
+    for (uint i = 0; i < texturesAmount / 2; i++) {
+        uint patchSize = patchSizes[i];
+
+        uint seed = texCoord.x + spectrumTexSize.x + texCoord.y * spectrumTexSize.y + generalParams.seed;
+        vec4 uniformRandomSamples = 
+            vec4(hash(seed),
+                hash(seed * 2),
+                hash(seed * 3),
+                hash(seed * 4)
+            );
+
+        vec2 firstGauss = uniformToGaussian(uniformRandomSamples.x, uniformRandomSamples.y);
+        vec2 secondGauss = uniformToGaussian(uniformRandomSamples.z, uniformRandomSamples.w);
+
+        float deltaK = kTwoPi / patchSize;
+        vec2 k = (vec2(texCoord) - center) * deltaK;
+        float lengthK = length(k);
+
+        if (lengthK < generalParams.lowCutoff || lengthK > generalParams.highCutoff) {
+            imageStore(spectrumTex, texCoord, vec4(0.0, 0.0, 0.0, 0.0));    
+            continue;
+        }
+
+        float angleK = atan(k.y, k.x);
+        float omega = dispersion(lengthK);
+        float dOmegaDk = dispersionDerivative(lengthK);
+
+        float spectrum = jonswap(omega, paramsArray[2 * i]) * directionalSpectrum(angleK, omega, paramsArray[2 * i]) * shortWavesFade(lengthK, paramsArray[2 * i]);
+
+        if (paramsArray[2 * i + 1].scale > 0) {
+            spectrum += jonswap(omega, paramsArray[2 * i + 1]) * directionalSpectrum(angleK, omega, paramsArray[2 * i + 1]) * shortWavesFade(lengthK, paramsArray[2 * i + 1]);
+        }
+
+        vec2 wave = vec2(firstGauss.x, secondGauss.y) * sqrt(2 * spectrum * abs(dOmegaDk) / lengthK * deltaK * deltaK);
+
+        imageStore(spectrumTex, texCoord, vec4(wave, 0.0, 0.0));    
+    }
+}

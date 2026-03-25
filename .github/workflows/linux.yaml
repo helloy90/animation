@@ -1,0 +1,69 @@
+name: linux
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+# mostly stolen from
+# https://github.com/fmtlib/fmt
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cxx: [g++-14, clang++-17]
+        build_type: [Debug, RelWithDebInfo, Release]
+        include:
+          - cxx: g++-14
+            install: sudo apt install g++-14
+          - cxx: clang++-17
+            cxxflags: -stdlib=libc++
+            install: sudo apt install clang-17 libc++-17-dev libc++abi-17-dev
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure Vulkan SDK
+      uses: humbletim/setup-vulkan-sdk@v1.2.1
+      with:
+        vulkan-query-version: 1.4.328.1
+        vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
+        vulkan-use-cache: true
+
+    - name: Install CMake
+      uses: ssrobins/install-cmake@v1
+      with:
+        version: 3.30.2
+
+    - name: Create Build Environment
+      run: |
+        sudo apt update
+        ${{matrix.install}}
+        sudo apt install libwayland-dev libxkbcommon-dev xorg-dev
+        cmake -E make_directory ${{runner.workspace}}/build
+
+    - name: Set up CPM cache
+      id: cache-cpm
+      uses: actions/cache@v4
+      with:
+        path: ~/cpm-cache
+        key: ${{ runner.os }}-cpm-${{ hashFiles('**/') }}
+        restore-keys: |
+          ${{ runner.os }}-cpm-
+
+    - name: Configure
+      working-directory: ${{runner.workspace}}/build
+      env:
+        CXX: ${{matrix.cxx}}
+        CXXFLAGS: ${{matrix.cxxflags}}
+      run: |
+        cmake -DCPM_SOURCE_CACHE=~/cpm-cache \
+          -DCMAKE_BUILD_TYPE=${{matrix.build_type}} \
+          $GITHUB_WORKSPACE
+
+    - name: Build
+      working-directory: ${{runner.workspace}}/build
+      run: |
+        threads=`nproc`
+        cmake --build . --config ${{matrix.build_type}} --parallel $threads

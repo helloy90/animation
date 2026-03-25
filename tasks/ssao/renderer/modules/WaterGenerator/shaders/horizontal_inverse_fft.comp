@@ -1,0 +1,68 @@
+#version 460
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : enable
+
+#include "complex.glsl"
+
+layout(local_size_x = 1024) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D spectrumTextures[];
+
+layout(set = 1, binding = 0) readonly uniform info_t {
+    uint size;
+    uint steps;
+    uint texturesAmount;
+};
+
+shared vec4 fftbuffer[2][1024];
+
+vec4 butterfly(uint stepFFT, uint size, uint index) {
+    uint period = size >> (stepFFT + 1);
+    uint w = period * (index / period);
+    uint currentIndex = (w + index) % size;
+
+    vec2 twiddleFactor = vec2(cos(-kTwoPi * w / size), -sin(-kTwoPi * w / size));
+    uvec2 indices = uvec2(currentIndex, currentIndex + period);
+
+    return vec4(twiddleFactor, indices);
+}
+
+vec4 FFT(uint threadIndex, vec4 initial) {
+    fftbuffer[0][threadIndex] = initial;
+
+    memoryBarrierShared();
+    barrier();
+
+    int flag = 0;
+
+    for (uint stepFFT = 0; stepFFT < steps; stepFFT++) {
+        vec4 data = butterfly(stepFFT, size, threadIndex);
+        vec2 twiddle = data.xy;
+        uvec2 indices = uvec2(data.zw);
+
+        vec4 first = fftbuffer[flag][indices.x];
+        vec4 second = fftbuffer[flag][indices.y];
+
+        fftbuffer[(flag + 1) % 2][threadIndex] = first + vec4(complexMult(twiddle, second.xy), complexMult(twiddle, second.zw));
+        memoryBarrierShared();
+        barrier();
+
+        flag = (flag + 1) % 2;
+    }
+
+    return fftbuffer[flag][threadIndex];
+}
+
+void main(void) {
+    ivec2 texCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 textureSize = ivec2(size);
+    if (texCoord.x >= textureSize.x) {
+        return;
+    }
+
+    for (uint i = 0; i < texturesAmount; i++) {
+        vec4 initial = imageLoad(spectrumTextures[i], texCoord);
+        imageStore(spectrumTextures[i], texCoord, FFT(texCoord.x, initial));
+    }
+}

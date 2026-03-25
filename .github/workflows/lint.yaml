@@ -1,0 +1,58 @@
+name: lint
+
+on:
+  pull_request:
+    paths:
+      - '**.hpp'
+      - '**.cpp'
+      - '**.clang-format'
+      - '**.clang-tidy'
+
+permissions:
+  contents: read
+
+jobs:
+  check-format-and-tidy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: jidicula/clang-format-action@v4.11.0
+      with:
+        clang-format-version: '20'
+        fallback-style: 'none'
+
+    - name: Prepare Vulkan SDK
+      uses: humbletim/setup-vulkan-sdk@v1.2.1
+      with:
+        vulkan-query-version: 1.4.328.1
+        vulkan-components: Vulkan-Headers, Vulkan-Loader
+        vulkan-use-cache: true
+
+    - uses: ZedThree/clang-tidy-review@v0.21.0
+      id: review
+      with:
+        apt_packages: 'sudo,wget,libx11-dev,xorg-dev,ca-certificates,gpg'
+        build_dir: build
+        install_commands: | # Awful, dirty hacks to get the cmake version we need
+          (test -f /usr/share/doc/kitware-archive-keyring/copyright || \
+            wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
+            | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null) && \
+          echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' | \
+            sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null && \
+          sudo apt-get update && \
+          (test -f /usr/share/doc/kitware-archive-keyring/copyright || \
+            sudo rm /usr/share/keyrings/kitware-archive-keyring.gpg) && \
+          apt-get -y install kitware-archive-keyring cmake
+        cmake_command: |
+          cmake -Bbuild -S. -DCMAKE_EXPORT_COMPILE_COMMANDS=on -DGLFW_BUILD_WAYLAND=off
+        clang_tidy_checks: '' # Use closest .clang-tidy config, not some weird default
+        split_workflow: true # So that comments work with fork PRs
+
+    # Upload review results as artifacts, a different workflow posts them
+    # as comments. This is required due to security stuff.
+    - uses: ZedThree/clang-tidy-review/upload@v0.21.0
+
+    # If there are any comments, fail the check
+    - if: steps.review.outputs.total_comments > 0
+      run: exit 1

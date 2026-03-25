@@ -1,0 +1,239 @@
+#version 460
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_GOOGLE_include_directive : require
+
+#include "depth_utils.glsl"
+
+#include "AntialiasingParams.h"
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(binding = 0) uniform sampler2D previousTarget;
+layout(binding = 1) uniform sampler2D previousDepthImage;
+layout(binding = 2, r11f_g11f_b10f) uniform image2D currentTarget;
+layout(binding = 3) uniform sampler2D currentDepthImage;
+layout(binding = 4, rg16f) readonly uniform image2D velocityImage;
+
+layout(binding = 5) readonly uniform params_t
+{
+  AntialiasingParams params;
+};
+
+layout(push_constant) uniform push_constant_t
+{
+  vec2 currentJitter;
+  vec2 nearFarPlanes;
+};
+
+float maxUnit(vec3 value)
+{
+  return max(value.x, max(value.y, value.z));
+}
+
+// Mitchell-Netravali filter
+float mitchell(float x)
+{
+  float B = params.catmullRomBParam;
+  float C = params.catmullRomCParam;
+  // float B = 1.0 / 3.0;
+  // float C = 1.0 / 3.0;
+
+  float y = 0.0;
+  float x2 = x * x;
+  float x3 = x2 * x;
+  if (x < 1)
+  {
+    y = (12 - 9 * B - 6 * C) * x3 + (-18 + 12 * B + 6 * C) * x2 + (6 - 2 * B);
+  }
+  else if (x <= 2)
+  {
+    y = (-B - 6 * C) * x3 + (6 * B + 30 * C) * x2 + (-12 * B - 48 * C) * x + (8 * B + 24 * C);
+  }
+
+  return y / 6.0;
+}
+
+// https://gist.github.com/TheRealMJP/c83b8c0f46b63f3a88a5986f4fa982b1
+vec4 catmullRomPreviousFrameSample(vec2 uv, vec2 tex_size)
+{
+  vec2 samplePos = uv * tex_size;
+  vec2 texPos1 = floor(samplePos - 0.5) + 0.5;
+
+  vec2 f = samplePos - texPos1;
+
+  vec2 w0 = f * (-.05 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+
+  vec2 w12 = w1 + w2;
+  vec2 offset12 = w2 / w12;
+
+  vec2 texPos0 = texPos1 - 1.0;
+  vec2 texPos3 = texPos1 + 2.0;
+  vec2 texPos12 = texPos1 + offset12;
+
+  texPos0 /= tex_size;
+  texPos3 /= tex_size;
+  texPos12 /= tex_size;
+
+  vec4 result = vec4(0.0);
+
+  result += texture(previousTarget, vec2(texPos0.x, texPos0.y)) * w0.x * w0.y;
+  result += texture(previousTarget, vec2(texPos12.x, texPos0.y)) * w12.x * w0.y;
+  result += texture(previousTarget, vec2(texPos3.x, texPos0.y)) * w3.x * w0.y;
+
+  result += texture(previousTarget, vec2(texPos0.x, texPos12.y)) * w0.x * w12.y;
+  result += texture(previousTarget, vec2(texPos12.x, texPos12.y)) * w12.x * w12.y;
+  result += texture(previousTarget, vec2(texPos3.x, texPos12.y)) * w3.x * w12.y;
+
+  result += texture(previousTarget, vec2(texPos0.x, texPos3.y)) * w0.x * w3.y;
+  result += texture(previousTarget, vec2(texPos12.x, texPos3.y)) * w12.x * w3.y;
+  result += texture(previousTarget, vec2(texPos3.x, texPos3.y)) * w3.x * w3.y;
+
+  return result;
+}
+
+// clips to center of AABB
+vec3 clipAABB(vec3 aabb_min, vec3 aabb_max, vec3 value)
+{
+  const vec3 center = 0.5 * (aabb_max + aabb_min);
+  const vec3 extent = 0.5 * (aabb_max - aabb_min) + 0.000001;
+  const vec3 valueClip = value - center;
+  const vec3 valueUnit = valueClip / extent;
+  const vec3 absUnit = abs(valueUnit);
+
+  const float maxUnitValue = maxUnit(absUnit);
+
+  if (maxUnitValue > 1.0)
+  {
+    return center + valueClip / maxUnitValue;
+  }
+  return value;
+}
+
+float luminance(vec3 color)
+{
+  return dot(color, vec3(0.299, 0.587, 0.114));
+}
+
+void main()
+{
+  const ivec2 resolution = imageSize(currentTarget);
+
+  const ivec2 currentTexCoord = ivec2(gl_GlobalInvocationID.xy);
+  const vec2 currentUVTexCoord = vec2(currentTexCoord) / vec2(resolution);
+
+  if (currentTexCoord.x >= resolution.x || currentTexCoord.y >= resolution.y)
+  {
+    return;
+  }
+
+  vec3 minNeightbourhood = vec3(10000.0);
+  vec3 maxNeightbourhood = vec3(-10000.0);
+
+  vec3 totalCurrentFrameSample = vec3(0);
+  float currentFrameSampleWeight = 0.0;
+
+  float closestDepth = 0.0;
+  ivec2 closestDepthPixelPosition = ivec2(0);
+
+  vec3 colorMoment = vec3(0);
+  vec3 secondColorMoment = vec3(0);
+
+  vec2 texelSize = 1.0 / vec2(resolution);
+
+  // neightbourhood clamping
+  for (int x = -1; x <= 1; x++)
+  {
+    for (int y = -1; y <= 1; y++)
+    {
+      ivec2 pos = currentTexCoord + ivec2(x, y);
+      pos = clamp(pos, ivec2(0), resolution - ivec2(1));
+
+      vec3 color = max(vec3(0), imageLoad(currentTarget, pos).xyz);
+
+      float subSampleDistance = length(vec2(x, y) + currentJitter);
+      float subSampleWeight = mitchell(subSampleDistance);
+
+      totalCurrentFrameSample += color * subSampleWeight;
+      currentFrameSampleWeight += subSampleWeight;
+
+      minNeightbourhood = min(minNeightbourhood, color);
+      maxNeightbourhood = max(maxNeightbourhood, color);
+
+      colorMoment += color;
+      secondColorMoment += color * color;
+
+      float currentDepth = texture(currentDepthImage, currentUVTexCoord + vec2(x, y) * texelSize).x;
+
+      if (currentDepth > closestDepth)
+      {
+        closestDepth = currentDepth;
+        closestDepthPixelPosition = pos;
+      }
+    }
+  }
+
+  const vec2 velocityVector = imageLoad(velocityImage, closestDepthPixelPosition).xy *
+    vec2(0.5, 0.5); // NOTE - maybe wrong y coord
+  const vec2 previousUVTexCoord = currentUVTexCoord - velocityVector;
+
+  const vec3 currentFrame = totalCurrentFrameSample / currentFrameSampleWeight;
+
+  if (any(notEqual(previousUVTexCoord, clamp(previousUVTexCoord, 0.0, 1.0))))
+  {
+    imageStore(currentTarget, currentTexCoord, vec4(currentFrame, 1.0));
+    return;
+  }
+
+  const float previousDepth = texture(previousDepthImage, previousUVTexCoord).x;
+
+  const float currentLinearDepth = linearize_depth(closestDepth, nearFarPlanes.x, nearFarPlanes.y);
+  const float previousLinearDepth =
+    linearize_depth(previousDepth, nearFarPlanes.x, nearFarPlanes.y);
+
+  if (abs(closestDepth - previousDepth) > params.maxDepthDelta)
+  {
+    imageStore(currentTarget, currentTexCoord, vec4(currentFrame, 1.0));
+    return;
+  }
+
+  vec3 previousFrame = catmullRomPreviousFrameSample(previousUVTexCoord, vec2(resolution)).xyz;
+
+  // variance clamping
+  const float rcpSampleCount = 1.0 / 9.0;
+  const float gamma = 1.25;
+  const vec3 mu = colorMoment * rcpSampleCount;
+  const vec3 sigma = sqrt(abs((secondColorMoment * rcpSampleCount) - (mu * mu)));
+  const vec3 minC = mu - gamma * sigma;
+  const vec3 maxC = mu + gamma * sigma;
+
+  previousFrame = clipAABB(minC, maxC, clamp(previousFrame, minNeightbourhood, maxNeightbourhood));
+
+  float previousWeight = params.previousFrameUsage;
+  float currentWeight = 1.0 - previousWeight;
+
+  const vec3 compressedCurrentFrame = currentFrame / (maxUnit(currentFrame) + 1.0);
+  const vec3 compressedPreviousFrame = previousFrame / (maxUnit(previousFrame) + 1.0);
+
+  const float currentLuminance = luminance(compressedCurrentFrame);
+  const float previousLuminance = luminance(compressedPreviousFrame);
+
+  previousWeight *= 1.0 / (1.0 + previousLuminance);
+  currentWeight *= 1.0 / (1.0 + currentLuminance);
+
+  const vec3 result = (currentFrame * currentWeight + previousFrame * previousWeight) /
+    max(currentWeight + previousWeight, 0.00001);
+
+  // const vec4 previousFrame = imageLoad(previousTarget, previousTexCoord);
+
+  // const vec3 previousFrameClamped = clamp(previousFrame.xyz, minNeightbourhood,
+  // maxNeightbourhood);
+
+  // const vec4 currentFrame = imageLoad(currentTarget, currentTexCoord);
+
+  // vec4 result = previousWeight * vec4(previousFrameClamped, 1.0) + currentWeight * currentFrame;
+
+  imageStore(currentTarget, currentTexCoord, vec4(result, 1));
+}

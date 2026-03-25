@@ -1,0 +1,94 @@
+#version 460
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_GOOGLE_include_directive : require
+
+#include "SpectrumGenerationParams.h"
+#include "GeneralSpectrumParams.h"
+#include "SpectrumUpdateParams.h"
+#include "complex.glsl"
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(binding = 0, rgba32f) readonly uniform image2D initialSpectrumTex;
+layout(binding = 1, rgba32f) writeonly uniform image2D updatedSpectrumSlopeTex;
+layout(binding = 2, rgba32f) writeonly uniform image2D updatedSpectrumDisplacementTex;
+
+layout(binding = 3) readonly uniform general_params_t {
+    GeneralSpectrumParams generalParams;
+};
+
+layout(binding = 4) readonly buffer params_t {
+    SpectrumGenerationParams paramsArray[];
+};
+
+layout(binding = 5) readonly uniform update_params_t {
+    SpectrumUpdateParams updateParams;
+};
+
+layout(binding = 6) readonly uniform info_t {
+    uint size;
+    uint steps;
+    uint texturesAmount;
+};
+
+layout(binding = 7) readonly buffer sizes_t {
+    uint patchSizes[];
+};
+
+layout(push_constant) uniform push_constant_t {
+    float time;
+};
+
+void main(void) {
+    ivec2 texCoord = ivec2(gl_GlobalInvocationID.xy);
+    uvec2 spectrumTexSize = imageSize(initialSpectrumTex);
+    if (texCoord.x >= spectrumTexSize.x || texCoord.y >= spectrumTexSize.y) {
+        return;
+    }
+
+    for (uint i = 0; i < texturesAmount / 2; i++) {
+        vec2 wave = imageLoad(initialSpectrumTex, texCoord).xy;
+        vec2 conjWave = imageLoad(initialSpectrumTex, ivec2((size - texCoord.x) % size, (size - texCoord.y) % size)).xy;
+
+        vec2 positiveKWave = wave;
+        vec2 negativeKWave = vec2(conjWave.x, -conjWave.y);
+
+        vec2 center = vec2(spectrumTexSize) / 2.0;
+
+        vec2 k = (vec2(texCoord) - center) * kTwoPi / patchSizes[i];
+        float lengthK = length(k);
+        float lengthKRcp = 1 / lengthK;
+        if (lengthK < generalParams.lowCutoff) {
+            lengthKRcp = 1.0;
+        }
+
+        float phase = kTwoPi / updateParams.wavePeriod;
+        float dispersion = floor(sqrt(generalParams.gravity * lengthK) / phase) * phase * time;
+        vec2 exponent = euler(dispersion);
+
+        vec2 fullWave = complexMult(positiveKWave, exponent) + complexMult(negativeKWave, vec2(exponent.x, -exponent.y));
+        vec2 dFullWave = vec2(-fullWave.y, fullWave.x);
+
+        // first derivatives
+        vec2 dispX = dFullWave * k.x * lengthKRcp;
+        vec2 dispY = fullWave;
+        vec2 dispZ = dFullWave * k.y * lengthKRcp;
+
+        // second derivatives
+        vec2 dispX_dx = -fullWave * k.x * k.x * lengthKRcp;
+        vec2 dispY_dx = dFullWave * k.x;
+        vec2 dispZ_dx = -fullWave * k.y * k.x * lengthKRcp;
+
+        vec2 dispY_dz = dFullWave * k.y;
+        vec2 dispZ_dz = -fullWave * k.y * k.y * lengthKRcp;
+
+        vec2 displacementX = vec2(dispX.x - dispZ.y, dispX.y + dispZ.x);
+        vec2 displacementZ = vec2(dispY.x - dispZ_dx.y, dispY.y + dispZ_dx.x);
+
+        vec2 slopeX = vec2(dispY_dx.x - dispY_dz.y, dispY_dx.y + dispY_dz.x);
+        vec2 slopeZ = vec2(dispX_dx.x - dispZ_dz.y, dispX_dx.y + dispZ_dz.x);
+
+        imageStore(updatedSpectrumDisplacementTex, texCoord, vec4(displacementX, displacementZ));
+        imageStore(updatedSpectrumSlopeTex, texCoord, vec4(slopeX, slopeZ));
+    }
+}

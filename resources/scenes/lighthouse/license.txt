@@ -1,0 +1,11 @@
+Model Information:
+* title:	lighthouse
+* source:	https://sketchfab.com/3d-models/lighthouse-dab98033118949728804bfc5f4076b8f
+* author:	Lora (https://sketchfab.com/Lora_o)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "lighthouse" (https://sketchfab.com/3d-models/lighthouse-dab98033118949728804bfc5f4076b8f) by Lora (https://sketchfab.com/Lora_o) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

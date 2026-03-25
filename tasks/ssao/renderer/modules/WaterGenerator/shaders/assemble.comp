@@ -1,0 +1,55 @@
+#version 460
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_GOOGLE_include_directive : require
+
+#include "SpectrumGenerationParams.h"
+#include "SpectrumUpdateParams.h"
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(binding = 0, rgba32f) readonly uniform image2D updatedSpectrumSlopeTex;
+layout(binding = 1, rgba32f) readonly uniform image2D updatedSpectrumDisplacementTex;
+
+layout(binding = 2, rgba32f) uniform image2D heightMap;
+layout(binding = 3, rgba32f) writeonly uniform image2D normalMap;
+
+layout(binding = 4) uniform update_params_t {
+    SpectrumUpdateParams updateParams;
+};
+
+vec4 permute(vec4 data, ivec2 index, ivec2 size) {
+    return data * (1.0 - 2.0 * ((index.x + index.y) % 2));
+}
+
+void main(void) {
+    ivec2 texCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 spectrumTexSize = imageSize(updatedSpectrumSlopeTex);
+    if (texCoord.x >= spectrumTexSize.x || texCoord.y >= spectrumTexSize.y) {
+        return;
+    }
+
+    vec4 spectrumSlope = permute(imageLoad(updatedSpectrumSlopeTex, texCoord), texCoord, spectrumTexSize);
+    vec4 spectrumDisplacement = permute(imageLoad(updatedSpectrumDisplacementTex, texCoord), texCoord, spectrumTexSize);
+
+    vec2 lambda = vec2(1);
+
+    vec2 dx_dz = spectrumDisplacement.xy;
+    vec2 dy_dxz = spectrumDisplacement.zw;
+    vec2 dyx_dyz = spectrumSlope.xy;
+    vec2 dxx_dzz = spectrumSlope.zw;
+
+    float jacobian = (1.0 + lambda.x * dxx_dzz.x) * (1.0 + lambda.y * dxx_dzz.y) - lambda.x * lambda.y * dy_dxz.y * dy_dxz.y;
+
+    vec3 displacement = vec3(lambda.x * dx_dz.x, dy_dxz.x, lambda.y * dx_dz.y);
+    vec2 slopes = dyx_dyz.xy / (1.0 + abs(dxx_dzz * lambda));
+    
+    float currentFoam = imageLoad(heightMap, texCoord).w;
+    float foam = clamp(currentFoam * exp(-updateParams.foamDecayRate), 0.0, 1.0);
+    float biasedJacobian = max(0.0, -(jacobian - updateParams.foamBias));
+    if (biasedJacobian > updateParams.foamThreshold) {
+        foam += updateParams.foamMultiplier * biasedJacobian;
+    }
+    
+    imageStore(heightMap, texCoord, vec4(displacement.x, displacement.y, displacement.z, foam));
+    imageStore(normalMap, texCoord, vec4(normalize(vec3(-slopes.x, 1.0, -slopes.y)), 0));
+}
