@@ -62,3 +62,8 @@ CPMAddPackage(
   GITHUB_REPOSITORY Naios/function2
   GIT_TAG 4.2.4
 )
+
+CPMAddPackage(
+  GITHUB_REPOSITORY assimp/assimp
+  GIT_TAG v6.0.4
+)
