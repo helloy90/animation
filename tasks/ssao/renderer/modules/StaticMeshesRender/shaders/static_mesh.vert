@@ -7,6 +7,8 @@
 
 layout(location = 0) in vec4 vPosNorm;
 layout(location = 1) in vec4 vTexCoordAndTang;
+layout(location = 2) in uvec4 vBoneIds;
+layout(location = 3) in vec4 vBoneWeights;
 
 struct RenderElement
 {
@@ -92,7 +94,6 @@ void main(void)
   const vec4 wNorm = decode_normal(floatBitsToUint(vPosNorm.w));
   vec4 wTang = decode_normal(floatBitsToUint(vTexCoordAndTang.z));
 
-  // NOTE - static objects, so no previous matrix needed
   vec3 worldPos = (currentModelMatrix * vec4(vPosNorm.xyz, 1.0f)).xyz;
   vec3 normalSpace = mat3(transpose(inverse(currentModelMatrix))) * wNorm.xyz;
   vec3 tangentSpace = mat3(transpose(inverse(currentModelMatrix))) * wTang.xyz;

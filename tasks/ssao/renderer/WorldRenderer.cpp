@@ -120,23 +120,6 @@ void WorldRenderer::loadInfo()
   staticMeshesRenderModule.loadSet();
 
   lightModule.loadLights(
-    // {Light{.pos = {0, 1, 0}, .radius = 0,  .color = {1, 1, 1}, .intensity = 15},
-    //  Light{.pos = {0, 0, 5}, .radius = 0,  .color = {1, 0, 1}, .intensity = 15},
-    //  Light{.pos = {5, 0, 25}, .radius = 0, .color = {1, 1, 1}, .intensity = 15},
-    //  Light{.pos = {3, 2, 50}, .radius = 0, .color = {0.5, 1, 0.5}, .intensity = 15},
-    //  Light{.pos = {75, 2, 75}, .radius = 0, .color = {1, 0.5, 1}, .intensity = 15},
-    //  Light{.pos = {50, 2, 20}, .radius = 0, .color = {0, 1, 1}, .intensity = 15},
-    //  Light{.pos = {25, 2, 50}, .radius = 0, .color = {1, 1, 0}, .intensity = 15},
-    //  Light{.pos = {50, 2, 50}, .radius = 0, .color = {0.3, 1, 0}, .intensity = 15},
-    //  Light{.pos = {25, 2, 10}, .radius = 0, .color = {1, 1, 0}, .intensity = 15},
-    //  Light{
-    //    .pos = {100, 2, 100}, .radius = 0, .color = {1, 0.5, 0.5}, .intensity = 15},
-    //  Light{.pos = {150, 2, 150}, .radius = 0, .color = {1, 1, 1}, .intensity = 100},
-    //  Light{.pos = {25, 2, 10}, .radius = 0, .color = {1, 1, 0}, .intensity = 15},
-    //  Light{.pos = {10, 2, 25}, .radius = 0, .color = {1, 0, 1}, .intensity = 15}},
-    // {DirectionalLight{
-    //   .direction = glm::vec3{1, -0.35, -3}, .intensity = 1.0f, .color = glm::vec3{1, 0.694,
-    //   0.32}}},
     {},
     {},
     ShadowCastingDirectionalLight::CreateInfo{
@@ -356,7 +339,7 @@ void WorldRenderer::renderWorld(vk::CommandBuffer cmd_buf, vk::Image target_imag
       currentHeavyRenderInfo.data(), &renderPacket.heavyInfo, sizeof(RenderPacket::HeavyInfo));
     currentHeavyRenderInfo.unmap();
 
-
+    staticMeshesRenderModule.prepareForRender();
 
     lightModule.prepareForDraw();
 
@@ -378,12 +361,19 @@ void WorldRenderer::renderWorld(vk::CommandBuffer cmd_buf, vk::Image target_imag
       }
     }
 
-    staticMeshesRenderModule.executeRender(
+    staticMeshesRenderModule.executePlaneRender(
       cmd_buf,
       renderPacket,
       currentHeavyRenderInfo,
       gBuffer->genColorAttachmentParams(),
       gBuffer->genDepthAttachmentParams());
+
+    staticMeshesRenderModule.executeRender(
+      cmd_buf,
+      renderPacket,
+      currentHeavyRenderInfo,
+      gBuffer->genColorAttachmentParams(vk::AttachmentLoadOp::eLoad),
+      gBuffer->genDepthAttachmentParams(vk::AttachmentLoadOp::eLoad));
 
     if (ssaoEnabled)
     {

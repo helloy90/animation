@@ -46,15 +46,13 @@ App::App()
 
   renderer->initFrameDelivery(std::move(surface), [this]() { return mainWindow->getResolution(); });
 
-  mainCam.lookAt({1, 1, 1}, {0, 0, 0}, {0, 1, 0});
+  mainCam.lookAt({2, 1, 2}, {0, 0, 0}, {0, 1, 0});
 
-  // note - maybe bad (see shadowmap)
+  // note - maybe bad
   ImGuiRenderer::enableImGuiForWindow(mainWindow->native());
 
   renderer->loadScene(
-    GRAPHICS_COURSE_RESOURCES_ROOT "/scenes/lighthouse/scene_baked.gltf",
-    mainCam.zNear,
-    mainCam.zFar);
+    GRAPHICS_COURSE_RESOURCES_ROOT "/scenes/MotusMan_v55/MotusMan_v55.fbx", mainCam.zNear, mainCam.zFar);
 }
 
 void App::run()

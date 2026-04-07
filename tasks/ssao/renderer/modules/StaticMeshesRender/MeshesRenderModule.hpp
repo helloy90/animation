@@ -9,7 +9,7 @@
 
 #include <glm/glm.hpp>
 
-#include "scene/SceneManager.hpp"
+#include "scene/AssimpSceneManager.hpp"
 
 #include "../RenderPacket.hpp"
 #include "shaders/MeshesParams.h"
@@ -31,6 +31,15 @@ public:
 
   void loadSet();
 
+  void prepareForRender();
+
+  void executePlaneRender(
+    vk::CommandBuffer cmd_buf,
+    const RenderPacket& packet,
+    const etna::Buffer& heavy_packet_info_buffer,
+    std::vector<etna::RenderTargetState::AttachmentParams> color_attachment_params,
+    etna::RenderTargetState::AttachmentParams depth_attachment_params);
+
   void executeRender(
     vk::CommandBuffer cmd_buf,
     const RenderPacket& packet,
@@ -49,13 +58,6 @@ public:
   const etna::Sampler& getStaticMeshSampler() const { return staticMeshSampler; }
 
 private:
-  // TODO - rename
-  struct Info
-  {
-    glm::mat4 translation;
-  };
-
-private:
   void cullMeshes(
     vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, const glm::mat4x4& proj_view);
 
@@ -69,13 +71,16 @@ private:
     vk::PipelineLayout pipeline_layout,
     const etna::Buffer& heavy_packet_info_buffer);
 
+  void renderPlane(
+    vk::CommandBuffer cmd_buf,
+    vk::PipelineLayout pipeline_layout,
+    const etna::Buffer& heavy_packet_info_buffer);
+
 private:
   MeshesParams params;
   etna::Buffer paramsBuffer;
 
-  Info info;
-
-  std::unique_ptr<SceneManager> sceneMgr;
+  std::unique_ptr<AssimpSceneManager> sceneMgr;
 
   std::optional<etna::PersistentDescriptorSet> meshesDescriptorSet;
 
@@ -83,6 +88,8 @@ private:
   etna::GraphicsPipeline staticMeshShadowPipeline;
   etna::ComputePipeline cullingPipeline;
   etna::ComputePipeline cullingShadowPipeline;
+
+  etna::GraphicsPipeline planePipeline;
 
   etna::Sampler staticMeshSampler;
 

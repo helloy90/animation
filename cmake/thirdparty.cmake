@@ -64,6 +64,7 @@ CPMAddPackage(
 )
 
 CPMAddPackage(
+  NAME assimp
   GITHUB_REPOSITORY assimp/assimp
   GIT_TAG v6.0.4
 )

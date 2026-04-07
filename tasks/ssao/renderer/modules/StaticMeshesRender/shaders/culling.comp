@@ -109,28 +109,28 @@ void main()
        relemIdx < currentMesh.firstRelem + currentMesh.relemCount;
        relemIdx++)
   {
-    bool visible = false;
+    bool visible = true;
 
-    vec3 currentMinPos = bounds[relemIdx].minPos;
-    vec3 currentMaxPos = bounds[relemIdx].maxPos;
+    // vec3 currentMinPos = bounds[relemIdx].minPos;
+    // vec3 currentMaxPos = bounds[relemIdx].maxPos;
 
-    vec4 corners[8] = {
-      {currentMaxPos.x, currentMaxPos.y, currentMaxPos.z, 1.0},
-      {currentMinPos.x, currentMaxPos.y, currentMaxPos.z, 1.0},
-      {currentMaxPos.x, currentMinPos.y, currentMaxPos.z, 1.0},
-      {currentMaxPos.x, currentMaxPos.y, currentMinPos.z, 1.0},
-      {currentMinPos.x, currentMinPos.y, currentMaxPos.z, 1.0},
-      {currentMinPos.x, currentMaxPos.y, currentMinPos.z, 1.0},
-      {currentMaxPos.x, currentMinPos.y, currentMinPos.z, 1.0},
-      {currentMinPos.x, currentMinPos.y, currentMinPos.z, 1.0}};
+    // vec4 corners[8] = {
+    //   {currentMaxPos.x, currentMaxPos.y, currentMaxPos.z, 1.0},
+    //   {currentMinPos.x, currentMaxPos.y, currentMaxPos.z, 1.0},
+    //   {currentMaxPos.x, currentMinPos.y, currentMaxPos.z, 1.0},
+    //   {currentMaxPos.x, currentMaxPos.y, currentMinPos.z, 1.0},
+    //   {currentMinPos.x, currentMinPos.y, currentMaxPos.z, 1.0},
+    //   {currentMinPos.x, currentMaxPos.y, currentMinPos.z, 1.0},
+    //   {currentMaxPos.x, currentMinPos.y, currentMinPos.z, 1.0},
+    //   {currentMinPos.x, currentMinPos.y, currentMinPos.z, 1.0}};
 
-    for (uint i = 0; i < 8; i++)
-    {
-      vec4 corner = projView * (instanceMatrices[instanceIdx] * corners[i]);
+    // for (uint i = 0; i < 8; i++)
+    // {
+    //   vec4 corner = projView * (instanceMatrices[instanceIdx] * corners[i]);
 
-      visible = visible || within(-corner.w, corner.x, corner.w) ||
-        within(-corner.w, corner.y, corner.w) || within(0.0, corner.z, corner.w);
-    }
+    //   visible = visible || within(-corner.w, corner.x, corner.w) ||
+    //     within(-corner.w, corner.y, corner.w) || within(0.0, corner.z, corner.w);
+    // }
 
     if (visible)
     {

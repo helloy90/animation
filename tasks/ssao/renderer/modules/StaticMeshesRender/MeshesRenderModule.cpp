@@ -12,8 +12,7 @@
 
 
 MeshesRenderModule::MeshesRenderModule()
-  : info{.translation = glm::translate(glm::identity<glm::mat4>(), glm::vec3(45, -20, -100))}
-  , sceneMgr{std::make_unique<SceneManager>()}
+  : sceneMgr{std::make_unique<AssimpSceneManager>()}
 {
 }
 
@@ -48,11 +47,16 @@ void MeshesRenderModule::loadShaders()
   etna::create_program("culling_meshes", {STATIC_MESHES_MODULE_SHADERS_ROOT "culling.comp.spv"});
   etna::create_program(
     "culling_shadow", {STATIC_MESHES_MODULE_SHADERS_ROOT "culling_shadow.comp.spv"});
+
+  etna::create_program(
+    "plane_mesh",
+    {STATIC_MESHES_MODULE_SHADERS_ROOT "plane.vert.spv",
+     STATIC_MESHES_MODULE_SHADERS_ROOT "plane.frag.spv"});
 }
 
 void MeshesRenderModule::loadScene(std::filesystem::path path)
 {
-  sceneMgr->selectBakedScene(path);
+  sceneMgr->selectScene(path);
 }
 
 void MeshesRenderModule::setupPipelines(
@@ -96,7 +100,7 @@ void MeshesRenderModule::setupPipelines(
         },
       .blendingConfig =
         {
-          .attachments = std::move(attachments),
+          .attachments = attachments,
           .logicOpEnable = false,
           .logicOp = {},
         },
@@ -131,6 +135,36 @@ void MeshesRenderModule::setupPipelines(
         },
     });
 
+  planePipeline = pipelineManager.createGraphicsPipeline(
+    "plane_mesh",
+    etna::GraphicsPipeline::CreateInfo{
+      .rasterizationConfig =
+        vk::PipelineRasterizationStateCreateInfo{
+          .polygonMode = (wireframe_enabled ? vk::PolygonMode::eLine : vk::PolygonMode::eFill),
+          .cullMode = vk::CullModeFlagBits::eNone,
+          .frontFace = vk::FrontFace::eCounterClockwise,
+          .lineWidth = 1.f,
+        },
+      .blendingConfig =
+        {
+          .attachments = attachments,
+          .logicOpEnable = false,
+          .logicOp = {},
+        },
+      .depthConfig =
+        {
+          .depthTestEnable = vk::True,
+          .depthWriteEnable = vk::True,
+          .depthCompareOp = vk::CompareOp::eGreaterOrEqual,
+          .maxDepthBounds = 1.f,
+        },
+      .fragmentShaderOutput =
+        {
+          .colorAttachmentFormats = color_attachent_formats,
+          .depthAttachmentFormat = depth_attachment_format,
+        },
+    });
+
   cullingPipeline = pipelineManager.createComputePipeline("culling_meshes", {});
   cullingShadowPipeline = pipelineManager.createComputePipeline("culling_shadow", {});
 }
@@ -155,6 +189,31 @@ void MeshesRenderModule::loadSet()
   paramsBuffer.map();
   std::memcpy(paramsBuffer.data(), &params, sizeof(MeshesParams));
   paramsBuffer.unmap();
+}
+
+void MeshesRenderModule::prepareForRender()
+{
+  sceneMgr->prepareForDraw();
+}
+
+void MeshesRenderModule::executePlaneRender(
+  vk::CommandBuffer cmd_buf,
+  const RenderPacket& packet,
+  const etna::Buffer& heavy_packet_info_buffer,
+  std::vector<etna::RenderTargetState::AttachmentParams> color_attachment_params,
+  etna::RenderTargetState::AttachmentParams depth_attachment_params)
+{
+  {
+    ETNA_PROFILE_GPU(cmd_buf, renderPlane);
+    etna::RenderTargetState renderTargets(
+      cmd_buf,
+      {{0, 0}, {packet.resolution.x, packet.resolution.y}},
+      color_attachment_params,
+      depth_attachment_params);
+
+    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, planePipeline.getVkPipeline());
+    renderPlane(cmd_buf, planePipeline.getVkPipelineLayout(), heavy_packet_info_buffer);
+  }
 }
 
 void MeshesRenderModule::executeRender(
@@ -224,30 +283,7 @@ void MeshesRenderModule::executeShadowMapping(
   }
 }
 
-void MeshesRenderModule::drawGui()
-{
-  ImGui::Begin("Application Settings");
-
-  static glm::vec3 translation = glm::vec3(45, -20, -100);
-  static bool translationChanged = false;
-
-  if (ImGui::CollapsingHeader("Meshes"))
-  {
-    float currentTranslation[] = {translation.x, translation.y, translation.z};
-    translationChanged = translationChanged ||
-      ImGui::DragFloat3("Meshes translation", currentTranslation, 0.1f, -5000.0f, 5000.0f);
-    translation = glm::vec3(currentTranslation[0], currentTranslation[1], currentTranslation[2]);
-    info.translation = glm::translate(glm::identity<glm::mat4>(), translation);
-  }
-
-  if (translationChanged)
-  {
-    ETNA_CHECK_VK_RESULT(etna::get_context().getDevice().waitIdle());
-    translationChanged = false;
-  }
-
-  ImGui::End();
-}
+void MeshesRenderModule::drawGui() {}
 
 void MeshesRenderModule::cullMeshes(
   vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, const glm::mat4x4& proj_view)
@@ -296,8 +332,6 @@ void MeshesRenderModule::cullMeshes(
   cmd_buf.bindDescriptorSets(
     vk::PipelineBindPoint::eCompute, pipeline_layout, 0, 1, &vkSet, 0, nullptr);
 
-  // cmd_buf.pushConstants<glm::mat4x4>(
-  //   pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, {proj_view, info.translation});
   cmd_buf.pushConstants<glm::mat4x4>(
     pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, {proj_view});
 
@@ -379,9 +413,6 @@ void MeshesRenderModule::cullMeshes(
   cmd_buf.bindDescriptorSets(
     vk::PipelineBindPoint::eCompute, pipeline_layout, 0, 1, &vkSet, 0, nullptr);
 
-  // cmd_buf.pushConstants<glm::mat4>(
-  //   pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, {info.translation});
-
   cmd_buf.dispatch((static_cast<uint32_t>(sceneMgr->getInstanceMeshes().size()) + 127) / 128, 1, 1);
 
   {
@@ -440,12 +471,29 @@ void MeshesRenderModule::renderScene(
     {meshesDescriptorSet->getVkSet(), set.getVkSet()},
     {});
 
-  // cmd_buf.pushConstants<glm::mat4>(
-  //   pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, {info.translation});
-
   cmd_buf.drawIndexedIndirect(
     sceneMgr->getDrawCommandsBuffer().get(),
     0,
     static_cast<uint32_t>(sceneMgr->getRenderElements().size()),
     sizeof(vk::DrawIndexedIndirectCommand));
+}
+
+void MeshesRenderModule::renderPlane(
+  vk::CommandBuffer cmd_buf,
+  vk::PipelineLayout pipeline_layout,
+  const etna::Buffer& heavy_packet_info_buffer)
+{
+  ZoneScoped;
+
+  auto shaderInfo = etna::get_shader_program("plane_mesh");
+
+  auto set = etna::create_descriptor_set(
+    shaderInfo.getDescriptorLayoutId(0),
+    cmd_buf,
+    {etna::Binding{0, heavy_packet_info_buffer.genBinding()}});
+
+  cmd_buf.bindDescriptorSets(
+    vk::PipelineBindPoint::eGraphics, pipeline_layout, 0, {set.getVkSet()}, {});
+
+  cmd_buf.draw(6, 1, 0, 0);
 }

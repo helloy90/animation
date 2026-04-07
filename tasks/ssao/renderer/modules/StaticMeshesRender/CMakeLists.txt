@@ -16,4 +16,6 @@ target_add_shaders(static_meshes_module
     shaders/static_mesh_shadow.vert 
     shaders/culling.comp
     shaders/culling_shadow.comp
+    shaders/plane.vert
+    shaders/plane.frag
 )
