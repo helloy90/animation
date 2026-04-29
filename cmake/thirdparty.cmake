@@ -68,3 +68,12 @@ CPMAddPackage(
   GITHUB_REPOSITORY assimp/assimp
   GIT_TAG v6.0.4
 )
+
+CPMAddPackage(
+  NAME ozz
+  GITHUB_REPOSITORY guillaumeblanc/ozz-animation
+  GIT_TAG 0.16.0
+  OPTIONS
+    "ozz_build_samples OFF"
+    "ozz_build_tests OFF"
+)
