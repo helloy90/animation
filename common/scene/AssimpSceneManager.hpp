@@ -67,14 +67,6 @@ struct HashRenderElement
   }
 };
 
-// struct Skeleton
-// {
-//   std::vector<glm::mat4x4> boneLocalMatrices;
-//   std::vector<glm::mat4x4> boneWorldMatrices;
-//   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> boneNames;
-//   std::unordered_map<uint32_t, uint32_t> parents;
-// };
-
 struct Bone
 {
   uint32_t matrixId;
@@ -196,21 +188,6 @@ private:
     std::uint32_t _padding2 = 0;
   };
   static_assert(sizeof(MaterialGLSLCompat) % (sizeof(float) * 4) == 0);
-
-  // struct Scene
-  // {
-  //   std::vector<Node> nodes;
-  //   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> nodeNameToIdx;
-  //   std::vector<glm::mat4x4> nodeGlobalTransforms;
-  //   std::vector<glm::mat4x4> boneGlobalTransforms;
-  // };
-
-  // struct NodeTraversal
-  // {
-  //   std::vector<glm::mat4x4> nodeTransforms;
-  //   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> nodeToIdx;
-  //   std::string rootNodeName;
-  // };
 
   struct ProcessedInstances
   {

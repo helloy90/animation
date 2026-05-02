@@ -53,8 +53,7 @@ public:
     etna::BufferBinding light_info_binding,
     etna::RenderTargetState::AttachmentParams shadow_mapping_attachment_params);
 
-  void drawBones(const glm::mat4x4& proj_view);
-  void drawBonesTransformes(const glm::mat4x4& proj_view);
+  void drawGui(const glm::mat4x4& proj_view);
 
   const etna::Sampler& getStaticMeshSampler() const { return staticMeshSampler; }
 
@@ -77,9 +76,14 @@ private:
     vk::PipelineLayout pipeline_layout,
     const etna::Buffer& heavy_packet_info_buffer);
 
+  void drawBones(const glm::mat4x4& proj_view);
+  void drawBonesTransforms(const glm::mat4x4& proj_view);
+
 private:
   MeshesParams params;
   etna::Buffer paramsBuffer;
+
+  shader_bool visualizeWeights = static_cast<shader_bool>(false);
 
   std::unique_ptr<AssimpSceneManager> sceneMgr;
 

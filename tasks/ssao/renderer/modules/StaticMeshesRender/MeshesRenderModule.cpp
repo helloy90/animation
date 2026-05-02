@@ -283,6 +283,37 @@ void MeshesRenderModule::executeShadowMapping(
   }
 }
 
+void MeshesRenderModule::drawGui(const glm::mat4x4& proj_view)
+{
+  ImGui::Begin("Application Settings");
+
+  static bool visualizeWeightsVal = false;
+  static bool drawBonesVal = false;
+  static bool drawBonesTransformsVal = false;
+
+  if (ImGui::CollapsingHeader("Meshes Rendering"))
+  {
+    if (ImGui::Checkbox("Visualize bone weights", &visualizeWeightsVal))
+    {
+      visualizeWeights = static_cast<shader_bool>(visualizeWeightsVal);
+    }
+    ImGui::Checkbox("Draw bones of the mesh", &drawBonesVal);
+    ImGui::Checkbox("Draw bones transforms", &drawBonesTransformsVal);
+  }
+
+  if (drawBonesVal)
+  {
+    drawBones(proj_view);
+  }
+
+  if (drawBonesTransformsVal)
+  {
+    drawBonesTransforms(proj_view);
+  }
+
+  ImGui::End();
+}
+
 static ImVec2 convertToImguiScreenSpace(glm::vec4& vec)
 {
   ImGuiIO& io = ImGui::GetIO();
@@ -352,7 +383,7 @@ void MeshesRenderModule::drawBones(const glm::mat4x4& proj_view)
   ImGui::PopStyleColor(2);
 }
 
-void MeshesRenderModule::drawBonesTransformes(const glm::mat4x4& proj_view)
+void MeshesRenderModule::drawBonesTransforms(const glm::mat4x4& proj_view)
 {
   const ImU32 flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
@@ -591,6 +622,9 @@ void MeshesRenderModule::renderScene(
     0,
     {meshesDescriptorSet->getVkSet(), set.getVkSet()},
     {});
+
+  cmd_buf.pushConstants<shader_bool>(
+    pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, {visualizeWeights});
 
   cmd_buf.drawIndexedIndirect(
     sceneMgr->getDrawCommandsBuffer().get(),

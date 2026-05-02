@@ -66,10 +66,10 @@ layout(set = 1, binding = 4) uniform render_params_t
   vec3 cameraWorldPosition;
 };
 
-// layout(push_constant) uniform push_constant_t
-// {
-//   mat4 translation;
-// };
+layout(push_constant) uniform push_constant_t
+{
+  bool visualizeWeights;
+};
 
 layout(location = 0) out VS_OUT
 {
@@ -103,11 +103,15 @@ void main(void)
 
   RenderElement currentRelem = relems[relemIdx];
 
-  boneColor = vec4(
-    random(vBoneIds.x) * vBoneWeights.x,
-    random(vBoneIds.y) * vBoneWeights.y,
-    random(vBoneIds.z) * vBoneWeights.z,
-    random(vBoneIds.w) * vBoneWeights.w);
+  boneColor = vec4(0, 0, 0, 0);
+  if (visualizeWeights)
+  {
+    boneColor = vec4(
+      random(vBoneIds.x) * vBoneWeights.x,
+      random(vBoneIds.y) * vBoneWeights.y,
+      random(vBoneIds.z) * vBoneWeights.z,
+      random(vBoneIds.w) * vBoneWeights.w);
+  }
 
   const vec4 wNorm = decode_normal(floatBitsToUint(vPosNorm.w));
   vec4 wTang = decode_normal(floatBitsToUint(vTexCoordAndTang.z));

@@ -1,5 +1,5 @@
 
-add_library(scene SceneManager.cpp AssimpSceneManager.cpp)
+add_library(scene AssimpSceneManager.cpp)
 
 target_include_directories(scene PUBLIC ..)
 
