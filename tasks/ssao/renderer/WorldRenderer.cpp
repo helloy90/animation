@@ -515,7 +515,6 @@ void WorldRenderer::drawGui()
   ssaoModule.drawGui();
   antialiasingModule.drawGui();
   lightModule.drawGui();
-  staticMeshesRenderModule.drawGui();
 
   ImGui::SeparatorText("Shadow Settings");
 
@@ -530,6 +529,14 @@ void WorldRenderer::drawGui()
   int pcfRange = params.pcfRange;
   ImGui::SliderInt("PCF Radius", &pcfRange, 0, 4);
   params.pcfRange = pcfRange;
+
+  ImGui::SeparatorText("Mesh Settings");
+  static bool drawBones = false;
+  ImGui::Checkbox("Draw bones of the mesh", &drawBones);
+  if (drawBones)
+  {
+    staticMeshesRenderModule.drawBones(params.projView);
+  }
 
   ImGui::SeparatorText("General Settings");
 

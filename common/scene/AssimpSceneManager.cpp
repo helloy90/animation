@@ -8,6 +8,9 @@
 
 #include "etna/RenderTargetStates.hpp"
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include "glm/gtx/string_cast.hpp"
+
 #include "render_utils/Utilities.hpp"
 
 static glm::mat4x4 mat4_cast(const aiMatrix4x4& mat)
@@ -18,6 +21,11 @@ static glm::mat4x4 mat4_cast(const aiMatrix4x4& mat)
 static glm::vec3 vec3_cast(const aiVector3D& vec)
 {
   return glm::vec3(vec.x, vec.y, vec.z);
+}
+
+static glm::vec4 color4_cast(const aiColor4D& col)
+{
+  return glm::vec4(col.r, col.g, col.b, col.a);
 }
 
 static uint32_t encode_normalized(glm::vec4 normal)
@@ -58,10 +66,13 @@ void AssimpSceneManager::selectScene(std::filesystem::path path)
   importer.SetPropertyInteger(
     AI_CONFIG_PP_SBP_REMOVE, aiPrimitiveType_LINE | aiPrimitiveType_POINT);
 
+  importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
+
   const aiScene* scene = importer.ReadFile(
     path.string(),
     aiProcess_CalcTangentSpace | aiProcess_Triangulate | aiProcess_JoinIdenticalVertices |
-      aiProcess_SortByPType | aiProcess_ConvertToLeftHanded);
+      aiProcess_SortByPType | aiProcess_ConvertToLeftHanded | aiProcess_LimitBoneWeights |
+      aiProcess_GenBoundingBoxes | aiProcess_GlobalScale);
 
   if (nullptr == scene)
   {
@@ -73,17 +84,19 @@ void AssimpSceneManager::selectScene(std::filesystem::path path)
   generatePlaceholderMaterial();
   processMaterials(scene, path.parent_path() / "textures");
 
-  auto [instMats, instMeshes] = processInstances(scene);
+  auto [instMats, instMeshes, processedSc] = processNodes(scene);
   instanceMatrices = std::move(instMats);
-
   instanceMeshes = std::move(instMeshes);
 
-  auto [verts, inds, boneMatrices, relems, groups, bounds] = processMeshes(scene);
+  processedScene = std::move(processedSc);
 
-  meshesBoneMatrices = std::move(boneMatrices);
+  auto [verts, inds, relems, groups, bounds] = processMeshes(scene);
+
   renderElements = std::move(relems);
   relemsGroups = std::move(groups);
   renderElementsBounds = std::move(bounds);
+
+  updateSceneMatrices();
 
   uploadData(verts, inds);
 }
@@ -97,6 +110,14 @@ void AssimpSceneManager::prepareForDraw()
     instanceMatrices.data(),
     instanceMatrices.size() * sizeof(glm::mat4x4));
   currentInstanceMatricesBuffer.unmap();
+
+  auto& currentBoneMatricesBuffer = unifiedBoneMatricesBuf->get();
+  currentBoneMatricesBuffer.map();
+  std::memcpy(
+    currentBoneMatricesBuffer.data(),
+    processedScene.boneGlobalTransforms.data(),
+    processedScene.boneGlobalTransforms.size() * sizeof(glm::mat4x4));
+  currentBoneMatricesBuffer.unmap();
 }
 
 void AssimpSceneManager::processMaterials(const aiScene* scene, std::filesystem::path textures_path)
@@ -172,10 +193,12 @@ void AssimpSceneManager::processMaterials(const aiScene* scene, std::filesystem:
     material.metallicFactor = 0.0f;
     material.roughnessFactor = 1.0f;
 
+    std::span props = std::span(aiMat->mProperties, aiMat->mProperties + aiMat->mNumProperties);
     if (aiMat->GetTextureCount(aiTextureType_DIFFUSE) > 0)
     {
       aiString name;
       aiMat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), name);
+
 
       std::filesystem::path path = name.C_Str();
       material.baseColorTexture =
@@ -184,6 +207,11 @@ void AssimpSceneManager::processMaterials(const aiScene* scene, std::filesystem:
     else
     {
       material.baseColorTexture = baseColorPlaceholder;
+      aiColor4D diffuse;
+      if (AI_SUCCESS == aiGetMaterialColor(aiMat, AI_MATKEY_COLOR_DIFFUSE, &diffuse))
+      {
+        material.baseColorFactor = color4_cast(diffuse);
+      }
     }
     if (aiMat->GetTextureCount(aiTextureType_NORMALS) > 0)
     {
@@ -304,8 +332,7 @@ void AssimpSceneManager::generatePlaceholderMaterial()
     static_cast<uint32_t>(normalPlaceholder));
 }
 
-AssimpSceneManager::ProcessedInstances AssimpSceneManager::processInstances(
-  const aiScene* scene) const
+AssimpSceneManager::ProcessedInstances AssimpSceneManager::processNodes(const aiScene* scene) const
 {
 
   // NOTE - maybe super ineffectient because of four traversals, but trying to minimize
@@ -314,7 +341,6 @@ AssimpSceneManager::ProcessedInstances AssimpSceneManager::processInstances(
   std::size_t meshesInstancesCount = 0;
   {
     std::queue<const aiNode*> nodes;
-
 
     nodes.push(scene->mRootNode);
 
@@ -336,87 +362,64 @@ AssimpSceneManager::ProcessedInstances AssimpSceneManager::processInstances(
     }
   }
 
-  std::vector nodeTransforms(nodesCount, glm::identity<glm::mat4x4>());
-
-  std::unordered_map<const aiNode*, uint32_t> nodeToIdx;
-  {
-    std::queue<const aiNode*> nodes;
-    std::uint32_t nodeIdx = 0;
-    nodes.push(scene->mRootNode);
-
-    while (!nodes.empty())
-    {
-      const aiNode* node = nodes.front();
-      nodes.pop();
-
-      nodeToIdx.emplace(node, nodeIdx);
-      ++nodeIdx;
-
-      nodeTransforms[nodeToIdx.at(node)] = mat4_cast(node->mTransformation);
-
-      std::span children = std::span(node->mChildren, node->mChildren + node->mNumChildren);
-
-      for (const auto child : children)
-      {
-        nodes.push(child);
-      }
-    }
-  }
-
-  {
-    std::stack<const aiNode*> nodes;
-    nodes.push(scene->mRootNode);
-
-    while (!nodes.empty())
-    {
-      const aiNode* node = nodes.top();
-      nodes.pop();
-
-      std::span children = std::span(node->mChildren, node->mChildren + node->mNumChildren);
-
-      for (const auto child : children)
-      {
-        nodeTransforms[nodeToIdx.at(child)] =
-          nodeTransforms[nodeToIdx.at(node)] * nodeTransforms[nodeToIdx.at(child)];
-        nodes.push(child);
-      }
-    }
-  }
-
   ProcessedInstances result;
 
   result.matrices.reserve(meshesInstancesCount);
   result.meshes.reserve(meshesInstancesCount);
 
-  {
-    std::queue<const aiNode*> nodes;
-    nodes.push(scene->mRootNode);
+  result.scene.nodes.reserve(nodesCount);
+  result.scene.nodeGlobalTransforms.resize(nodesCount, glm::identity<glm::mat4x4>());
 
-    while (!nodes.empty())
-    {
-      const aiNode* node = nodes.front();
-      nodes.pop();
+  auto buildProcessedScene = [&scene, &result]() -> void {
+    auto buildImpl = [&result](const aiNode* node, uint32_t parent, auto& traverse_impl) -> void {
+      uint32_t nodeIdx = result.scene.nodes.size();
+      std::string nodeName = node->mName.C_Str();
+      result.scene.nodeNameToIdx.emplace(nodeName, nodeIdx);
+
+      Node& sceneNode = result.scene.nodes.emplace_back(
+        Node{
+          .name = nodeName,
+          .id = nodeIdx,
+          .parentId = parent,
+          .childrenIds = {},
+          .localTransform = mat4_cast(node->mTransformation),
+        });
+
+      sceneNode.childrenIds.reserve(node->mNumChildren);
+
+      if (parent != ~uint32_t(0)) [[likely]]
+      {
+        result.scene.nodes[parent].childrenIds.emplace_back(nodeIdx);
+        result.scene.nodeGlobalTransforms[nodeIdx] =
+          result.scene.nodeGlobalTransforms[parent] * sceneNode.localTransform;
+      }
+      else
+      {
+        result.scene.nodeGlobalTransforms[nodeIdx] = sceneNode.localTransform;
+      }
 
       for (uint32_t i = 0; i < node->mNumMeshes; i++)
       {
         result.matrices.push_back(
-          glm::scale(nodeTransforms[nodeToIdx.at(node)], glm::vec3(0.01, 0.01, 0.01)));
+          glm::scale(result.scene.nodeGlobalTransforms[nodeIdx], glm::vec3(1, 1, 1)));
         result.meshes.push_back(node->mMeshes[i]);
       }
 
-      std::span children = std::span(node->mChildren, node->mChildren + node->mNumChildren);
-
-      for (const auto child : children)
+      for (uint32_t i = 0; i < node->mNumChildren; i++)
       {
-        nodes.push(child);
+        traverse_impl(node->mChildren[i], nodeIdx, traverse_impl);
       }
-    }
-  }
+    };
+
+    buildImpl(scene->mRootNode, ~uint32_t(0), buildImpl);
+  };
+
+  buildProcessedScene();
 
   return result;
 }
 
-AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiScene* scene) const
+AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiScene* scene)
 {
   ProcessedMeshes result;
 
@@ -442,8 +445,6 @@ AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiSc
     result.indices.reserve(indicesCount);
   }
 
-  result.boneMatrices.resize(scene->mNumMeshes);
-
   result.relems.reserve(scene->mNumMeshes);
   result.bounds.reserve(scene->mNumMeshes);
   // it seems that meshes is the same as relems in assimp
@@ -451,6 +452,7 @@ AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiSc
   // leaving it for compatibility with already present rendering
   result.relemsGroup.reserve(scene->mNumMeshes);
 
+  bool boneSetupCalled = false;
   for (uint32_t meshIdx = 0; meshIdx < scene->mNumMeshes; meshIdx++)
   {
     const aiMesh* mesh = scene->mMeshes[meshIdx];
@@ -481,8 +483,6 @@ AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiSc
       const aiVector3D& meshVertex = mesh->mVertices[vertIdx];
       // NOTE - may blow up for models that dont have normals/tangents/texcoords
       const aiVector3D& meshNormal = mesh->mNormals[vertIdx];
-      const aiVector3D& meshTangent = mesh->mTangents[vertIdx];
-      const aiVector3D& meshTexcoord = mesh->mTextureCoords[0][vertIdx];
 
       auto& vertex = result.vertices.emplace_back();
 
@@ -492,12 +492,26 @@ AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiSc
         meshVertex.z,
         std::bit_cast<float>(
           encode_normalized(glm::vec4(glm::vec3(meshNormal.x, meshNormal.y, meshNormal.z), 0))));
-      vertex.texCoordAndTangentAndPadding = glm::vec4(
-        meshTexcoord.x,
-        meshTexcoord.y,
-        std::bit_cast<float>(
-          encode_normalized(glm::vec4(meshTangent.x, meshTangent.y, meshTangent.z, 1))),
-        0);
+
+      vertex.texCoordAndTangentAndPadding = glm::vec4(0, 0, 0, 0);
+      if (mesh->mTangents != nullptr)
+      {
+        const aiVector3D& meshTangent = mesh->mTangents[vertIdx];
+        vertex.texCoordAndTangentAndPadding.z = std::bit_cast<float>(
+          encode_normalized(glm::vec4(meshTangent.x, meshTangent.y, meshTangent.z, 1)));
+      }
+      else
+      {
+        vertex.texCoordAndTangentAndPadding.z =
+          std::bit_cast<float>(encode_normalized(glm::vec4(0, 0, 1, 1)));
+      }
+      if (mesh->mTextureCoords[0] != nullptr)
+      {
+        const aiVector3D& meshTexcoord = mesh->mTextureCoords[0][vertIdx];
+        vertex.texCoordAndTangentAndPadding.x = meshTexcoord.x;
+        vertex.texCoordAndTangentAndPadding.y = meshTexcoord.y;
+      }
+
       vertex.boneIds = glm::uvec4(0, 0, 0, 0);
       vertex.boneWeights = glm::vec4(0, 0, 0, 0);
     }
@@ -522,27 +536,119 @@ AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiSc
 
     if (mesh->HasBones())
     {
-      result.boneMatrices[meshIdx].reserve(mesh->mNumBones);
+      ETNA_VERIFY(!boneSetupCalled);
+      processedScene.boneGlobalTransforms.resize(mesh->mNumBones, glm::identity<glm::mat4x4>());
+      processedScene.boneIds.reserve(mesh->mNumBones);
       std::vector<uint32_t> weightOffset(mesh->mNumVertices, 0);
 
       for (uint32_t i = 0; i < mesh->mNumBones; i++)
       {
         const aiBone* bone = mesh->mBones[i];
-        result.boneMatrices[meshIdx].push_back(mat4_cast(bone->mOffsetMatrix));
+        processedScene.nodes[processedScene.nodeNameToIdx.at(bone->mName.C_Str())].boneInfo.emplace(
+          Bone{
+            .matrixId = i,
+            .parentNodeId = ~uint32_t(0),
+            .childrenNodeIds = std::vector<uint32_t>(),
+            .offsetMatrix = mat4_cast(bone->mOffsetMatrix),
+          });
+        processedScene.boneIds.emplace_back(processedScene.nodeNameToIdx.at(bone->mName.C_Str()));
+
+        spdlog::info(
+          "Got bone matrix with idx {} = {}",
+          i,
+          glm::to_string(processedScene.nodes[processedScene.nodeNameToIdx.at(bone->mName.C_Str())]
+                           .boneInfo.value()
+                           .offsetMatrix));
 
         std::span weights = std::span(bone->mWeights, bone->mWeights + bone->mNumWeights);
         for (const auto& [vertexId, weight] : weights)
         {
-          uint32_t offset = weightOffset[vertexId];
+          uint32_t offset = weightOffset[vertexId]++;
           ETNA_VERIFY(offset < 4);
           result.vertices[currentVertexOffset + vertexId].boneWeights[offset] = weight;
           result.vertices[currentVertexOffset + vertexId].boneIds[offset] = i;
         }
       }
+
+      for (auto& vertex : result.vertices)
+      {
+        const glm::vec4& weights = vertex.boneWeights;
+        float sum = weights.x + weights.y + weights.z + weights.w;
+        vertex.boneWeights *= 1.0f / sum;
+      }
+
+      boneSetupCalled = true;
     }
+
+    auto buildSkeleton = [&scene, this]() -> void {
+      auto buildImpl =
+        [this](const aiNode* node, uint32_t bone_parent, auto& traverse_impl) -> void {
+        Node& sceneNode =
+          processedScene.nodes[processedScene.nodeNameToIdx.at(node->mName.C_Str())];
+
+        if (sceneNode.boneInfo.has_value())
+        {
+          Bone& bone = sceneNode.boneInfo.value();
+
+          if (bone_parent != ~uint32_t(0)) [[likely]]
+          {
+            bone.parentNodeId = bone_parent;
+            processedScene.nodes[bone_parent].boneInfo->childrenNodeIds.emplace_back(sceneNode.id);
+          }
+
+          bone_parent = processedScene.nodeNameToIdx.at(node->mName.C_Str());
+        }
+
+        for (uint32_t i = 0; i < node->mNumChildren; i++)
+        {
+          traverse_impl(node->mChildren[i], bone_parent, traverse_impl);
+        }
+      };
+
+      buildImpl(scene->mRootNode, ~uint32_t(0), buildImpl);
+    };
+
+    buildSkeleton();
   }
 
   return result;
+}
+
+void AssimpSceneManager::updateSceneMatrices()
+{
+  static std::stack<uint32_t> nodes;
+  nodes.push(0);
+
+  while (!nodes.empty())
+  {
+    uint32_t nodeId = nodes.top();
+    nodes.pop();
+
+    Node& node = processedScene.nodes[nodeId];
+
+    if (node.parentId != ~uint32_t(0)) [[likely]]
+    {
+      processedScene.nodeGlobalTransforms[node.id] =
+        processedScene.nodeGlobalTransforms[node.parentId] * node.localTransform;
+    }
+    else
+    {
+      processedScene.nodeGlobalTransforms[node.id] = node.localTransform;
+    }
+
+    if (node.boneInfo.has_value())
+    {
+      Bone& bone = node.boneInfo.value();
+
+      processedScene.boneGlobalTransforms[bone.matrixId] =
+        processedScene.nodeGlobalTransforms[node.id] * bone.offsetMatrix;
+    }
+
+    for (const uint32_t childId : node.childrenIds)
+    {
+      nodes.push(childId);
+    }
+  }
 }
 
 void AssimpSceneManager::uploadData(
@@ -653,6 +759,20 @@ void AssimpSceneManager::uploadData(
     "{} - relem bounds size, {} - instance matrices size",
     renderElementsBounds.size(),
     instanceMatrices.size());
+
+  unifiedBoneMatricesBuf.emplace(
+    ctx.getMainWorkCount(),
+    [&ctx, boneMatricesSize = processedScene.boneGlobalTransforms.size()](std::size_t i) {
+      return ctx.createBuffer(
+        etna::Buffer::CreateInfo{
+          .size = boneMatricesSize * sizeof(glm::mat4x4),
+          .bufferUsage =
+            vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer,
+          .memoryUsage = VMA_MEMORY_USAGE_AUTO,
+          .allocationCreate = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT,
+          .name = fmt::format("unifiedBoneMatricesbuf{}", i)});
+    });
 
   unifiedInstanceMeshesbuf = ctx.createBuffer(
     etna::Buffer::CreateInfo{

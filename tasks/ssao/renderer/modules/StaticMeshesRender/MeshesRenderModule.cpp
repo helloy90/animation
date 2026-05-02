@@ -283,7 +283,55 @@ void MeshesRenderModule::executeShadowMapping(
   }
 }
 
-void MeshesRenderModule::drawGui() {}
+void MeshesRenderModule::drawBones(const glm::mat4x4 proj_view)
+{
+  const ImU32 flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+  ImGuiIO& io = ImGui::GetIO();
+  ImGui::SetNextWindowSize(io.DisplaySize);
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, 0);
+  ImGui::PushStyleColor(ImGuiCol_Border, 0);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+
+  ImGui::Begin("bones", nullptr, flags);
+
+  ImDrawList* drawList = ImGui::GetWindowDrawList();
+  const auto color = IM_COL32(255, 215, 0, 128);
+
+  const Scene& scene = sceneMgr->getScene();
+  for (const uint32_t boneNodeId : scene.boneIds)
+  {
+    const Node& bone = scene.nodes[boneNodeId];
+    if (bone.boneInfo->parentNodeId != ~uint32_t(0))
+    {
+      const Node& parentBone = scene.nodes[bone.boneInfo->parentNodeId];
+      const glm::mat4& parentTransform =
+        glm::translate(scene.nodeGlobalTransforms[parentBone.id], glm::vec3(0, 0, 0));
+      const glm::mat4& transform =
+        glm::translate(scene.nodeGlobalTransforms[bone.id], glm::vec3(0, 0, 0));
+      glm::vec4 fromScreen = proj_view * parentTransform[3];
+      fromScreen /= fromScreen.w;
+      fromScreen = (fromScreen + 1.0f) / 2.0f;
+      fromScreen.x = fromScreen.x * io.DisplaySize.x;
+      fromScreen.y = fromScreen.y * io.DisplaySize.y;
+
+      glm::vec4 toScreen = proj_view * transform[3];
+      toScreen /= toScreen.w;
+      toScreen = (toScreen + 1.0f) / 2.0f;
+      toScreen.x = toScreen.x * io.DisplaySize.x;
+      toScreen.y = toScreen.y * io.DisplaySize.y;
+      drawList->AddLine(
+        ImVec2(fromScreen.x, fromScreen.y), ImVec2(toScreen.x, toScreen.y), color, 4.f);
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor(2);
+}
 
 void MeshesRenderModule::cullMeshes(
   vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout, const glm::mat4x4& proj_view)
@@ -462,7 +510,8 @@ void MeshesRenderModule::renderScene(
     {etna::Binding{0, sceneMgr->getRelemsBuffer().genBinding()},
      etna::Binding{1, sceneMgr->getInstanceMatricesBuffer().genBinding()},
      etna::Binding{2, sceneMgr->getDrawInstanceIndicesBuffer().genBinding()},
-     etna::Binding{3, heavy_packet_info_buffer.genBinding()}});
+     etna::Binding{3, sceneMgr->getBoneMatricesBuffer().genBinding()},
+     etna::Binding{4, heavy_packet_info_buffer.genBinding()}});
 
   cmd_buf.bindDescriptorSets(
     vk::PipelineBindPoint::eGraphics,

@@ -16,6 +16,25 @@
 #include "resource/Material.hpp"
 #include "resource/Texture2D.hpp"
 
+namespace
+{
+struct StringHash
+{
+  using is_transparent = void; // NOLINT
+  [[nodiscard]] size_t operator()(const char* txt) const
+  {
+    return std::hash<std::string_view>{}(txt);
+  }
+  [[nodiscard]] size_t operator()(std::string_view txt) const
+  {
+    return std::hash<std::string_view>{}(txt);
+  }
+  [[nodiscard]] size_t operator()(const std::string& txt) const
+  {
+    return std::hash<std::string>{}(txt);
+  }
+};
+} // namespace
 
 // Bounds for each render element
 struct Bounds
@@ -48,6 +67,49 @@ struct HashRenderElement
   }
 };
 
+// struct Skeleton
+// {
+//   std::vector<glm::mat4x4> boneLocalMatrices;
+//   std::vector<glm::mat4x4> boneWorldMatrices;
+//   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> boneNames;
+//   std::unordered_map<uint32_t, uint32_t> parents;
+// };
+
+struct Bone
+{
+  uint32_t matrixId;
+  uint32_t parentNodeId = ~uint32_t(0);
+  std::vector<uint32_t> childrenNodeIds;
+  glm::mat4x4 offsetMatrix;
+};
+
+struct Node
+{
+  std::string name;
+  uint32_t id;                       // to globalTransform and node arrays
+  uint32_t parentId = ~uint32_t(0);  // to globalTransform and node arrays
+  std::vector<uint32_t> childrenIds; // to globalTransform and node arrays
+
+  glm::mat4x4 localTransform;
+  // glm::mat4x4 globalTransform;
+
+  std::optional<Bone> boneInfo = std::nullopt;
+};
+
+struct Scene
+{
+  std::vector<Node> nodes;
+  std::vector<uint32_t> boneIds; // to node array
+  std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> nodeNameToIdx;
+  std::vector<glm::mat4x4> nodeGlobalTransforms;
+  std::vector<glm::mat4x4> boneGlobalTransforms;
+
+  __forceinline const Bone& getBone(uint32_t bone_id) const
+  {
+    ETNA_ASSERT(nodes[bone_id].boneInfo.has_value());
+    return nodes[bone_id].boneInfo.value();
+  }
+};
 // A mesh is a collection of relems. A scene may have the same mesh
 // located in several different places, so a scene consists of **instances**,
 // not meshes.
@@ -82,6 +144,9 @@ public:
   vk::Buffer getVertexBuffer() { return unifiedVbuf.get(); }
   vk::Buffer getIndexBuffer() { return unifiedIbuf.get(); }
 
+  const Scene& getScene() const { return processedScene; }
+  void updateSceneMatrices();
+
   etna::Buffer& getMaterialBuffer() { return unifiedMaterialsbuf; }
 
   etna::Buffer& getRelemsBuffer() { return unifiedRelemsbuf; }
@@ -89,6 +154,7 @@ public:
   etna::Buffer& getMeshesBuffer() { return unifiedMeshesbuf; }
   etna::Buffer& getInstanceMeshesBuffer() { return unifiedInstanceMeshesbuf; }
   etna::Buffer& getInstanceMatricesBuffer() { return unifiedInstanceMatricesbuf->get(); }
+  etna::Buffer& getBoneMatricesBuffer() { return unifiedBoneMatricesBuf->get(); }
   etna::Buffer& getRelemInstanceOffsetsBuffer() { return unifiedRelemInstanceOffsetsbuf; }
   etna::Buffer& getDrawInstanceIndicesBuffer() { return unifiedDrawRelemsInstanceIndicesbuf; }
   etna::Buffer& getDrawCommandsBuffer() { return unifiedDrawCommandsbuf; }
@@ -99,6 +165,7 @@ public:
 
   void updateMatrices(const glm::mat4& transform);
 
+public:
   // for now one placeholder for all materials
   Texture2D::Id baseColorPlaceholder;
   Texture2D::Id metallicRoughnessPlaceholder;
@@ -116,7 +183,6 @@ private:
   };
   static_assert(sizeof(RenderElementGLSLCompat) % (sizeof(float) * 4) == 0);
 
-
   struct MaterialGLSLCompat
   {
     glm::vec4 baseColorFactor;
@@ -131,10 +197,26 @@ private:
   };
   static_assert(sizeof(MaterialGLSLCompat) % (sizeof(float) * 4) == 0);
 
+  // struct Scene
+  // {
+  //   std::vector<Node> nodes;
+  //   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> nodeNameToIdx;
+  //   std::vector<glm::mat4x4> nodeGlobalTransforms;
+  //   std::vector<glm::mat4x4> boneGlobalTransforms;
+  // };
+
+  // struct NodeTraversal
+  // {
+  //   std::vector<glm::mat4x4> nodeTransforms;
+  //   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> nodeToIdx;
+  //   std::string rootNodeName;
+  // };
+
   struct ProcessedInstances
   {
     std::vector<glm::mat4x4> matrices;
     std::vector<std::uint32_t> meshes;
+    Scene scene;
   };
 
   struct Vertex
@@ -147,16 +229,17 @@ private:
     glm::uvec4 boneIds;
     glm::vec4 boneWeights;
   };
+
   struct ProcessedMeshes
   {
     std::vector<Vertex> vertices;
     std::vector<std::uint32_t> indices;
-    std::vector<std::vector<glm::mat4x4>> boneMatrices;
     std::vector<RenderElement> relems;
     std::vector<RelemsGroup> relemsGroup;
     std::vector<Bounds> bounds;
   };
 
+private:
   void processMaterials(const aiScene* scene, std::filesystem::path path);
 
   Texture2D::Id generatePlaceholderTexture(
@@ -164,15 +247,19 @@ private:
 
   void generatePlaceholderMaterial();
 
-  ProcessedInstances processInstances(const aiScene* scene) const;
-  ProcessedMeshes processMeshes(const aiScene* scene) const;
+  ProcessedInstances processNodes(const aiScene* scene) const;
+  // not const - updates Scene
+  ProcessedMeshes processMeshes(const aiScene* scene);
   void uploadData(std::span<const Vertex> vertices, std::span<const std::uint32_t> indices);
 
 private:
   std::unique_ptr<etna::OneShotCmdMgr> oneShotCommands;
   etna::BlockingTransferHelper transferHelper;
 
-  std::vector<std::vector<glm::mat4x4>> meshesBoneMatrices;
+  // NodeTraversal traversedNodes;
+  Scene processedScene;
+
+  // std::vector<Skeleton> skeletons;
   std::vector<RenderElement> renderElements;
   std::vector<RelemsGroup> relemsGroups;
   std::vector<glm::mat4x4> instanceMatrices;
@@ -195,7 +282,7 @@ private:
 
   std::optional<etna::GpuSharedResource<etna::Buffer>> unifiedInstanceMatricesbuf;
   // std::optional<etna::GpuSharedResource<etna::Buffer>> unifiedBoneMatricesbuf;
-
+  std::optional<etna::GpuSharedResource<etna::Buffer>> unifiedBoneMatricesBuf;
   etna::Buffer unifiedInstanceMeshesbuf;
   etna::Buffer unifiedRelemInstanceOffsetsbuf;
 

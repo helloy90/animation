@@ -40,7 +40,7 @@ layout(set = 1, binding = 0) readonly buffer relems_t
   RenderElement relems[];
 };
 
-layout(set = 1, binding = 3) uniform render_params_t
+layout(set = 1, binding = 4) uniform render_params_t
 {
   mat4 projView;
   mat4 previousProjView;
@@ -53,9 +53,7 @@ layout(location = 0) in VS_OUT
 {
   vec4 currentPos;
   vec4 previousPos;
-  // vec3 wNorm;
-  // vec4 wTangent;
-  // vec3 wBitangent;
+  vec4 boneColor;
   vec3 wNormOut;
   vec2 texCoord;
   flat uint relemIdx;
@@ -69,7 +67,8 @@ void main()
     textureQueryLod(textures[nonuniformEXT(currentMaterial.baseColorTexture)], texCoord).x;
   gAlbedo =
     textureLod(textures[nonuniformEXT(currentMaterial.baseColorTexture)], texCoord, currentLod) *
-    currentMaterial.baseColorFactor;
+      currentMaterial.baseColorFactor +
+    boneColor;
   gNormal = wNormOut;
   gMaterial = texture(textures[nonuniformEXT(currentMaterial.metallicRoughnessTexture)], texCoord);
   gMaterial.g *= currentMaterial.roughnessFactor;

@@ -52,7 +52,12 @@ layout(set = 1, binding = 2) readonly buffer draw_instance_indices_t
   uint drawInstanceIndices[];
 };
 
-layout(set = 1, binding = 3) uniform render_params_t
+layout(set = 1, binding = 3) readonly buffer bone_matrices_t
+{
+  mat4 boneMatrices[];
+};
+
+layout(set = 1, binding = 4) uniform render_params_t
 {
   mat4 projView;
   mat4 previousProjView;
@@ -70,9 +75,7 @@ layout(location = 0) out VS_OUT
 {
   vec4 currentPos;
   vec4 previousPos;
-  // vec3 wNorm;
-  // vec4 wTangent;
-  // vec3 wBitangent;
+  vec4 boneColor;
   vec3 wNormOut;
   vec2 texCoord;
   flat uint relemIdx;
@@ -83,13 +86,28 @@ out gl_PerVertex
   vec4 gl_Position;
 };
 
+float random(uint id)
+{
+  return fract(sin(float(id + 1)) * 43758.5453);
+}
+
 void main(void)
 {
   relemIdx = gl_DrawID;
 
-  mat4 currentModelMatrix = instanceMatrices[drawInstanceIndices[gl_InstanceIndex]];
+  mat4 boneTransform = boneMatrices[vBoneIds.x] * vBoneWeights.x +
+    boneMatrices[vBoneIds.y] * vBoneWeights.y + boneMatrices[vBoneIds.z] * vBoneWeights.z +
+    boneMatrices[vBoneIds.w] * vBoneWeights.w;
+
+  mat4 currentModelMatrix = instanceMatrices[drawInstanceIndices[gl_InstanceIndex]] * boneTransform;
 
   RenderElement currentRelem = relems[relemIdx];
+
+  boneColor = vec4(
+    random(vBoneIds.x) * vBoneWeights.x,
+    random(vBoneIds.y) * vBoneWeights.y,
+    random(vBoneIds.z) * vBoneWeights.z,
+    random(vBoneIds.w) * vBoneWeights.w);
 
   const vec4 wNorm = decode_normal(floatBitsToUint(vPosNorm.w));
   vec4 wTang = decode_normal(floatBitsToUint(vTexCoordAndTang.z));

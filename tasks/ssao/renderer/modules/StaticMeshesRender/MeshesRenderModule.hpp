@@ -53,7 +53,7 @@ public:
     etna::BufferBinding light_info_binding,
     etna::RenderTargetState::AttachmentParams shadow_mapping_attachment_params);
 
-  void drawGui();
+  void drawBones(const glm::mat4x4 proj_view);
 
   const etna::Sampler& getStaticMeshSampler() const { return staticMeshSampler; }
 

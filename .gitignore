@@ -7,3 +7,6 @@ external
 .vscode
 CMakeSettings.json
 CMakeUserPresets.json
+
+Animations/
+testModel/

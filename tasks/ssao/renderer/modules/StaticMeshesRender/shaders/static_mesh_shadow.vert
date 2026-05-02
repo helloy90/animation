@@ -6,6 +6,8 @@
 
 layout(location = 0) in vec4 vPosNorm;
 layout(location = 1) in vec4 vTexCoordAndTang;
+layout(location = 2) in uvec4 vBoneIds;
+layout(location = 3) in vec4 vBoneWeights;
 
 layout(std140, binding = 0) readonly buffer instance_matrices_t
 {
