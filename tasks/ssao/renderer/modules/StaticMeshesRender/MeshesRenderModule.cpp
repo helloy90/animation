@@ -283,7 +283,31 @@ void MeshesRenderModule::executeShadowMapping(
   }
 }
 
-void MeshesRenderModule::drawBones(const glm::mat4x4 proj_view)
+static ImVec2 convertToImguiScreenSpace(glm::vec4& vec)
+{
+  ImGuiIO& io = ImGui::GetIO();
+
+  vec /= vec.w;
+
+  if (vec.z <= 0)
+  {
+    return ImVec2(-1, -1);
+  }
+
+  vec = (vec + 1.0f) / 2.0f;
+  vec.x = vec.x * io.DisplaySize.x;
+  vec.y = vec.y * io.DisplaySize.y;
+
+  return ImVec2(vec.x, vec.y);
+}
+
+static bool isInsideScreen(const ImVec2& vec)
+{
+  ImGuiIO& io = ImGui::GetIO();
+  return ((vec.x >= 0 && vec.x <= io.DisplaySize.x) && (vec.y >= 0 && vec.y <= io.DisplaySize.y));
+};
+
+void MeshesRenderModule::drawBones(const glm::mat4x4& proj_view)
 {
   const ImU32 flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
@@ -300,7 +324,7 @@ void MeshesRenderModule::drawBones(const glm::mat4x4 proj_view)
   ImGui::Begin("bones", nullptr, flags);
 
   ImDrawList* drawList = ImGui::GetWindowDrawList();
-  const auto color = IM_COL32(255, 215, 0, 128);
+  const auto color = IM_COL32(192, 192, 192, 255);
 
   const Scene& scene = sceneMgr->getScene();
   for (const uint32_t boneNodeId : scene.boneIds)
@@ -309,23 +333,71 @@ void MeshesRenderModule::drawBones(const glm::mat4x4 proj_view)
     if (bone.boneInfo->parentNodeId != ~uint32_t(0))
     {
       const Node& parentBone = scene.nodes[bone.boneInfo->parentNodeId];
-      const glm::mat4& parentTransform =
-        glm::translate(scene.nodeGlobalTransforms[parentBone.id], glm::vec3(0, 0, 0));
-      const glm::mat4& transform =
-        glm::translate(scene.nodeGlobalTransforms[bone.id], glm::vec3(0, 0, 0));
-      glm::vec4 fromScreen = proj_view * parentTransform[3];
-      fromScreen /= fromScreen.w;
-      fromScreen = (fromScreen + 1.0f) / 2.0f;
-      fromScreen.x = fromScreen.x * io.DisplaySize.x;
-      fromScreen.y = fromScreen.y * io.DisplaySize.y;
+      const glm::mat4& parentTransform = scene.nodeGlobalTransforms[parentBone.id];
+      const glm::mat4& transform = scene.nodeGlobalTransforms[bone.id];
+      glm::vec4 from = proj_view * parentTransform[3];
+      glm::vec4 to = proj_view * transform[3];
 
-      glm::vec4 toScreen = proj_view * transform[3];
-      toScreen /= toScreen.w;
-      toScreen = (toScreen + 1.0f) / 2.0f;
-      toScreen.x = toScreen.x * io.DisplaySize.x;
-      toScreen.y = toScreen.y * io.DisplaySize.y;
-      drawList->AddLine(
-        ImVec2(fromScreen.x, fromScreen.y), ImVec2(toScreen.x, toScreen.y), color, 4.f);
+      ImVec2 fromScreen = convertToImguiScreenSpace(from);
+      ImVec2 toScreen = convertToImguiScreenSpace(to);
+
+      if (isInsideScreen(fromScreen) || isInsideScreen(toScreen))
+      {
+        drawList->AddLine(fromScreen, toScreen, color, 4.f);
+      }
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor(2);
+}
+
+void MeshesRenderModule::drawBonesTransformes(const glm::mat4x4& proj_view)
+{
+  const ImU32 flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+  ImGuiIO& io = ImGui::GetIO();
+  ImGui::SetNextWindowSize(io.DisplaySize);
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, 0);
+  ImGui::PushStyleColor(ImGuiCol_Border, 0);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+
+  ImGui::Begin("bones_transforms", nullptr, flags);
+
+  ImDrawList* drawList = ImGui::GetWindowDrawList();
+  const ImU32 colors[3] = {
+    IM_COL32(255, 0, 0, 255),
+    IM_COL32(0, 255, 0, 255),
+    IM_COL32(0, 0, 255, 255),
+  };
+
+  const Scene& scene = sceneMgr->getScene();
+  for (const uint32_t boneNodeId : scene.boneIds)
+  {
+    const Node& bone = scene.nodes[boneNodeId];
+    const glm::mat4& transform = scene.nodeGlobalTransforms[bone.id];
+
+    glm::vec4 from = proj_view * transform[3];
+
+    glm::vec4 toPoints[3] = {
+      proj_view * (transform[3] + glm::vec4(0.05, 0, 0, 0)),
+      proj_view * (transform[3] + glm::vec4(0, 0.05, 0, 0)),
+      proj_view * (transform[3] + glm::vec4(0, 0, 0.05, 0)),
+    };
+
+    ImVec2 fromScreen = convertToImguiScreenSpace(from);
+
+    for (uint32_t i = 0; i < 3; i++)
+    {
+      ImVec2 toScreen = convertToImguiScreenSpace(toPoints[i]);
+      if (isInsideScreen(fromScreen) && isInsideScreen(toScreen))
+      {
+        drawList->AddLine(fromScreen, toScreen, colors[i], 4.f);
+      }
     }
   }
   ImGui::End();

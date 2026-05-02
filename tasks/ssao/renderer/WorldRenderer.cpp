@@ -530,12 +530,21 @@ void WorldRenderer::drawGui()
   ImGui::SliderInt("PCF Radius", &pcfRange, 0, 4);
   params.pcfRange = pcfRange;
 
-  ImGui::SeparatorText("Mesh Settings");
-  static bool drawBones = false;
-  ImGui::Checkbox("Draw bones of the mesh", &drawBones);
-  if (drawBones)
   {
-    staticMeshesRenderModule.drawBones(params.projView);
+    ImGui::SeparatorText("Mesh Settings");
+    static bool drawBones = false;
+    ImGui::Checkbox("Draw bones of the mesh", &drawBones);
+    if (drawBones)
+    {
+      staticMeshesRenderModule.drawBones(params.projView);
+    }
+
+    static bool drawBonesTransforms = false;
+    ImGui::Checkbox("Draw bones transforms", &drawBonesTransforms);
+    if (drawBonesTransforms)
+    {
+      staticMeshesRenderModule.drawBonesTransformes(params.projView);
+    }
   }
 
   ImGui::SeparatorText("General Settings");
