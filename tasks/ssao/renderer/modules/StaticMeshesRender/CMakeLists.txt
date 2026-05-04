@@ -9,7 +9,6 @@ target_shader_include_directories(static_meshes_module INTERFACE shaders)
 
 target_link_libraries(static_meshes_module PUBLIC etna render_utils gui scene)
 
-
 target_add_shaders(static_meshes_module
     shaders/static_mesh.frag
     shaders/static_mesh.vert 

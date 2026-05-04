@@ -27,7 +27,7 @@ public:
     ShadowCastingDirectionalLight::CreateInfo shadow_casting_dir_light_create_info);
   void displaceLights();
 
-  void update(const Camera& main_camera, float aspect_ratio);
+  void update(const ArcballCamera& main_camera, float aspect_ratio);
 
   void prepareForDraw();
 

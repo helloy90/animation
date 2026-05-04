@@ -1,14 +1,13 @@
 #include "WorldRenderer.hpp"
 
-#include <imgui.h>
-#include <tracy/Tracy.hpp>
-#include <stb_image.h>
-
+#include <etna/Assert.hpp>
 #include <etna/GlobalContext.hpp>
 #include <etna/PipelineManager.hpp>
 #include <etna/Profiling.hpp>
 #include <etna/RenderTargetStates.hpp>
-#include <etna/Assert.hpp>
+#include <imgui.h>
+#include <stb_image.h>
+#include <tracy/Tracy.hpp>
 
 #include "render_utils/Utilities.hpp"
 
@@ -98,9 +97,14 @@ void WorldRenderer::allocateResources(glm::uvec2 swapchain_resolution)
   staticMeshesRenderModule.allocateResources();
 }
 
-void WorldRenderer::loadScene(std::filesystem::path path, float near_plane, float far_plane)
+void WorldRenderer::loadScene(
+  const std::filesystem::path& scene_path,
+  const std::vector<std::pair<SceneState, std::filesystem::path>>& animations,
+  const glm::mat4x4& scene_transform,
+  float near_plane,
+  float far_plane)
 {
-  staticMeshesRenderModule.loadScene(path);
+  staticMeshesRenderModule.loadScene(scene_path, animations, scene_transform);
 
   getPlanesForShadowCascades(near_plane, far_plane, 0.9f);
 
@@ -315,6 +319,7 @@ void WorldRenderer::update(const FramePacket& packet)
 
     if (!timeStopped)
     {
+      staticMeshesRenderModule.update(packet.deltaTime, packet.sceneTransform, packet.currentState);
       lightModule.update(packet.mainCam, aspect);
     }
   }

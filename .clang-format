@@ -1,4 +1,3 @@
----
 BasedOnStyle: Microsoft
 
 IndentWidth: 2
@@ -6,7 +5,6 @@ MaxEmptyLinesToKeep: 2
 ColumnLimit: 100
 InsertNewlineAtEOF: true
 
-SortIncludes: Never
 PointerAlignment: Left
 AllowShortFunctionsOnASingleLine: Inline
 
@@ -25,3 +23,21 @@ BreakConstructorInitializers: BeforeComma
 BreakInheritanceList: BeforeComma
 PackConstructorInitializers: Never
 ConstructorInitializerIndentWidth: 2
+
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '<CoreMinimal.h>'
+    Priority: 1
+  - Regex: '<.*>'
+    Priority: 2
+  - Regex: '"CoreMinimal.h"'
+    Priority: 3
+  - Regex: '"(?!.*.generated.h).*"'
+    Priority: 4
+  - Regex: '"[a-zA-Z0-9\/\_\\\-]*.h"'
+    Priority: 5
+  - Regex: '"[a-zA-Z0-9\/\_\\]*.generated.h"'
+    Priority: 8
+  - Regex: 'UE_INLINE_GENERATED_CPP_BY_NAME.*\)'
+    Priority: 9

@@ -2,6 +2,10 @@
 
 #include <tracy/Tracy.hpp>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
+#include <glm/gtx/vector_angle.hpp>
+
 #include "gui/ImGuiRenderer.hpp"
 
 
@@ -46,13 +50,25 @@ App::App()
 
   renderer->initFrameDelivery(std::move(surface), [this]() { return mainWindow->getResolution(); });
 
-  mainCam.lookAt({2, 1, 2}, {0, 0, 0}, {0, 1, 0});
+  mainCam.lookAt({2, 1, 2}, {0, 1, 0}, {0, 1, 0});
 
   // note - maybe bad
   ImGuiRenderer::enableImGuiForWindow(mainWindow->native());
 
+  // NOTE - doing it like this because the mesh is identical, but node hierarchy is not
   renderer->loadScene(
-    GRAPHICS_COURSE_RESOURCES_ROOT "/scenes/MotusMan_v55/MotusMan_v55.fbx", mainCam.zNear, mainCam.zFar);
+    GRAPHICS_COURSE_RESOURCES_ROOT "/Animations/IPC/MOB1_Stand_Relaxed_Idle_IPC.fbx",
+    {
+      {SceneState::Idle,
+       GRAPHICS_COURSE_RESOURCES_ROOT "/Animations/IPC/MOB1_Stand_Relaxed_Idle_IPC.fbx"},
+      {SceneState::Walking,
+       GRAPHICS_COURSE_RESOURCES_ROOT "/Animations/IPC/MOB1_Walk_F_Loop_IPC.fbx"},
+      {SceneState::Running,
+       GRAPHICS_COURSE_RESOURCES_ROOT "/Animations/IPC/MOB1_Run_F_Loop_IPC.fbx"},
+    },
+    glm::identity<glm::mat4x4>(),
+    mainCam.zNear,
+    mainCam.zFar);
 }
 
 void App::run()
@@ -73,6 +89,76 @@ void App::run()
     FrameMark;
   }
 }
+void App::moveScene(const Keyboard& kb, float dt)
+{
+  glm::vec3 forward = glm::rotateY(glm::vec3(0, 0, -1), sceneYaw);
+  glm::vec3 right = glm::rotateY(glm::vec3(1, 0, 0), sceneYaw);
+
+  glm::vec3 dir = {0, 0, 0};
+  float yawDir = 1.0f;
+
+  float rotationSpeed = 5.0f;
+  bool running = false;
+
+  if (is_held_down(kb[KeyboardKey::kLeftShift]))
+  {
+    running = true;
+    speed = 6.0f;
+  }
+  else
+  {
+    running = false;
+    speed = 2.0f;
+  }
+
+  if (is_held_down(kb[KeyboardKey::kS]))
+  {
+    dir -= forward;
+    rotationSpeed /= 2.0f;
+  }
+
+  if (is_held_down(kb[KeyboardKey::kW]))
+    dir += forward;
+
+  if (is_held_down(kb[KeyboardKey::kA]))
+  {
+    dir -= right;
+    yawDir = 1.0f;
+  }
+
+  if (is_held_down(kb[KeyboardKey::kD]))
+  {
+    dir += right;
+    yawDir = -1.0f;
+  }
+
+
+  if (length(dir) > 1e-9)
+  {
+    sceneState = running ? SceneState::Running : SceneState::Walking;
+
+    float angle = glm::angle(glm::normalize(dir), glm::normalize(forward));
+
+    if (glm::dot(dir, forward) > glm::epsilon<float>())
+    {
+      scenePosition += glm::vec3(dt * speed * normalize(dir));
+    }
+    else
+    {
+      sceneState = SceneState::Walking;
+    }
+
+    sceneYaw += rotationSpeed * yawDir * angle * dt;
+    sceneYaw = glm::mod(sceneYaw, 2 * glm::pi<float>());
+  }
+  else
+  {
+    sceneState = SceneState::Idle;
+  }
+
+  mainCam.lookAtPos = scenePosition;
+  mainCam.lookAtPos.y = 1;
+}
 
 void App::processInput(float dt)
 {
@@ -89,9 +175,9 @@ void App::processInput(float dt)
   if (mainWindow->mouse[MouseButton::mbRight] == ButtonState::Rising)
     mainWindow->captureMouse = !mainWindow->captureMouse;
 
-  moveCam(mainCam, mainWindow->keyboard, dt);
+  moveScene(mainWindow->keyboard, dt);
   if (mainWindow->captureMouse)
-    rotateCam(mainCam, mainWindow->mouse, dt);
+    updateCam(mainCam, mainWindow->mouse, dt);
 
   renderer->debugInput(mainWindow->keyboard);
 }
@@ -100,45 +186,23 @@ void App::drawFrame(float dt)
 {
   ZoneScoped;
 
+  sceneTransform = glm::translate(glm::identity<glm::mat4x4>(), scenePosition) *
+    glm::yawPitchRoll(sceneYaw, 0.0f, 0.0f);
+
   renderer->update(
     FramePacket{
-      .mainCam = mainCam, .currentTime = static_cast<float>(windowing.getTime()), .deltaTime = dt});
+      .mainCam = mainCam,
+      .sceneTransform = sceneTransform,
+      .currentState = sceneState,
+      .currentTime = static_cast<float>(windowing.getTime()),
+      .deltaTime = dt});
   renderer->drawFrame();
 }
 
-void App::moveCam(Camera& cam, const Keyboard& kb, float dt)
-{
-  // Move position of camera based on WASD keys, and FR keys for up and down
-
-  glm::vec3 dir = {0, 0, 0};
-
-  if (is_held_down(kb[KeyboardKey::kS]))
-    dir -= cam.forward();
-
-  if (is_held_down(kb[KeyboardKey::kW]))
-    dir += cam.forward();
-
-  if (is_held_down(kb[KeyboardKey::kA]))
-    dir -= cam.right();
-
-  if (is_held_down(kb[KeyboardKey::kD]))
-    dir += cam.right();
-
-  if (is_held_down(kb[KeyboardKey::kF]))
-    dir -= cam.up();
-
-  if (is_held_down(kb[KeyboardKey::kR]))
-    dir += cam.up();
-
-  // NOTE: This is how you make moving diagonally not be faster than
-  // in a straight line.
-  cam.move(dt * camMoveSpeed * (length(dir) > 1e-9 ? normalize(dir) : dir));
-}
-
-void App::rotateCam(Camera& cam, const Mouse& ms, float /*dt*/)
+void App::updateCam(ArcballCamera& cam, const Mouse& ms, float dt)
 {
   // Rotate camera based on mouse movement
-  cam.rotate(camRotateSpeed * ms.capturedPosDelta.y, camRotateSpeed * ms.capturedPosDelta.x);
+  cam.rotate(-camRotateSpeed * ms.capturedPosDelta.y, camRotateSpeed * ms.capturedPosDelta.x);
 
   // Increase or decrease field of view based on mouse wheel
   cam.fov -= zoomSensitivity * ms.scrollDelta.y;
@@ -146,4 +210,6 @@ void App::rotateCam(Camera& cam, const Mouse& ms, float /*dt*/)
     cam.fov = 1.0f;
   if (cam.fov > 120.0f)
     cam.fov = 120.0f;
+
+  cam.update(dt);
 }

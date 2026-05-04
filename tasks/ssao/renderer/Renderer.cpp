@@ -1,11 +1,10 @@
 #include "Renderer.hpp"
 
-#include <etna/GlobalContext.hpp>
 #include <etna/Etna.hpp>
-#include <etna/RenderTargetStates.hpp>
+#include <etna/GlobalContext.hpp>
 #include <etna/PipelineManager.hpp>
 #include <etna/Profiling.hpp>
-
+#include <etna/RenderTargetStates.hpp>
 #include <imgui.h>
 
 
@@ -90,9 +89,14 @@ void Renderer::initFrameDelivery(vk::UniqueSurfaceKHR a_surface, ResolutionProvi
 }
 
 // little bit ugly
-void Renderer::loadScene(std::filesystem::path path, float near_plane, float far_plane)
+void Renderer::loadScene(
+  const std::filesystem::path& scene_path,
+  const std::vector<std::pair<SceneState, std::filesystem::path>>& animations,
+  const glm::mat4x4& scene_transform,
+  float near_plane,
+  float far_plane)
 {
-  worldRenderer->loadScene(path, near_plane, far_plane);
+  worldRenderer->loadScene(scene_path, animations, scene_transform, near_plane, far_plane);
 }
 
 void Renderer::recreateSwapchain(glm::uvec2 res)

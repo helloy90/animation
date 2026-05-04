@@ -1,14 +1,14 @@
 #include "MeshesRenderModule.hpp"
-#include "RenderPacket.hpp"
-
-#include <glm/ext/matrix_transform.hpp>
-#include <tracy/Tracy.hpp>
-#include <imgui.h>
 
 #include <etna/GlobalContext.hpp>
 #include <etna/PipelineManager.hpp>
 #include <etna/Profiling.hpp>
 #include <etna/RenderTargetStates.hpp>
+#include <glm/ext/matrix_transform.hpp>
+#include <imgui.h>
+#include <tracy/Tracy.hpp>
+
+#include "RenderPacket.hpp"
 
 
 MeshesRenderModule::MeshesRenderModule()
@@ -54,9 +54,21 @@ void MeshesRenderModule::loadShaders()
      STATIC_MESHES_MODULE_SHADERS_ROOT "plane.frag.spv"});
 }
 
-void MeshesRenderModule::loadScene(std::filesystem::path path)
+void MeshesRenderModule::loadScene(
+  const std::filesystem::path& scene_path,
+  const std::vector<std::pair<SceneState, std::filesystem::path>>& animations,
+  const glm::mat4x4& scene_transform)
 {
-  sceneMgr->selectScene(path);
+  sceneMgr->selectScene(scene_path, scene_transform);
+  for (const auto& anim : animations)
+  {
+    sceneMgr->loadAnimationForScene(anim);
+  }
+
+  if (sceneMgr->getScene().animations.size() > 0)
+  {
+    sceneMgr->getScene().chooseAnimation(SceneState::Idle);
+  }
 }
 
 void MeshesRenderModule::setupPipelines(
@@ -191,6 +203,15 @@ void MeshesRenderModule::loadSet()
   paramsBuffer.unmap();
 }
 
+void MeshesRenderModule::update(float dt, const glm::mat4x4& scene_transform, SceneState state)
+{
+  if (!sceneMgr->getScene().animationOverrideActive)
+  {
+    sceneMgr->getScene().chooseAnimation(state);
+  }
+  sceneMgr->updateScene(dt, scene_transform);
+}
+
 void MeshesRenderModule::prepareForRender()
 {
   sceneMgr->prepareForDraw();
@@ -290,6 +311,9 @@ void MeshesRenderModule::drawGui(const glm::mat4x4& proj_view)
   static bool visualizeWeightsVal = false;
   static bool drawBonesVal = false;
   static bool drawBonesTransformsVal = false;
+  static bool animationOverride = false;
+
+  static SceneState selectedAnimation = SceneState::None;
 
   if (ImGui::CollapsingHeader("Meshes Rendering"))
   {
@@ -299,6 +323,32 @@ void MeshesRenderModule::drawGui(const glm::mat4x4& proj_view)
     }
     ImGui::Checkbox("Draw bones of the mesh", &drawBonesVal);
     ImGui::Checkbox("Draw bones transforms", &drawBonesTransformsVal);
+
+    if (ImGui::Checkbox("Override animation", &animationOverride))
+    {
+      sceneMgr->getScene().animationOverrideActive = animationOverride;
+    }
+
+    if (ImGui::BeginListBox("Animations"))
+    {
+      const auto& animations = sceneMgr->getScene().animations;
+      for (const auto& [state, animation] : animations)
+      {
+        const bool selected = (selectedAnimation == state);
+        if (ImGui::Selectable(animation->name(), selected))
+        {
+          selectedAnimation = state;
+          sceneMgr->getScene().chooseAnimation(selectedAnimation);
+        }
+
+        if (selected)
+        {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+
+      ImGui::EndListBox();
+    }
   }
 
   if (drawBonesVal)
@@ -361,11 +411,11 @@ void MeshesRenderModule::drawBones(const glm::mat4x4& proj_view)
   for (const uint32_t boneNodeId : scene.boneIds)
   {
     const Node& bone = scene.nodes[boneNodeId];
-    if (bone.boneInfo->parentNodeId != ~uint32_t(0))
+    if (bone.boneInfo->parentNodeId != INVALID_INDEX)
     {
       const Node& parentBone = scene.nodes[bone.boneInfo->parentNodeId];
-      const glm::mat4& parentTransform = scene.nodeGlobalTransforms[parentBone.id];
-      const glm::mat4& transform = scene.nodeGlobalTransforms[bone.id];
+      const glm::mat4& parentTransform = scene.getWorldTransformRef(parentBone.id);
+      const glm::mat4& transform = scene.getWorldTransformRef(bone.id);
       glm::vec4 from = proj_view * parentTransform[3];
       glm::vec4 to = proj_view * transform[3];
 
@@ -410,7 +460,7 @@ void MeshesRenderModule::drawBonesTransforms(const glm::mat4x4& proj_view)
   for (const uint32_t boneNodeId : scene.boneIds)
   {
     const Node& bone = scene.nodes[boneNodeId];
-    const glm::mat4& transform = scene.nodeGlobalTransforms[bone.id];
+    const glm::mat4& transform = scene.getWorldTransformRef(bone.id);
 
     glm::vec4 from = proj_view * transform[3];
 

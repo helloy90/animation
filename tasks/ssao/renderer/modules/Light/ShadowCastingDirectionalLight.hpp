@@ -1,14 +1,16 @@
 #pragma once
 
-#include <glm/fwd.hpp>
-#include <vector>
-#include <optional>
-
 #include <etna/Buffer.hpp>
 #include <etna/GpuSharedResource.hpp>
+#include <glm/fwd.hpp>
+#include <optional>
+#include <vector>
+
+#include "DirectionalLight.h"
 
 #include "scene/Camera.hpp"
-#include "DirectionalLight.h"
+#include "scene/ArcballCamera.hpp"
+
 
 
 class ShadowCastingDirectionalLight
@@ -45,7 +47,7 @@ public:
 
   explicit ShadowCastingDirectionalLight(const CreateInfo& info);
 
-  void update(const Camera& main_camera, float aspect_ratio);
+  void update(const ArcballCamera& main_camera, float aspect_ratio);
   void drawGui();
 
   void prepareForDraw();
@@ -56,7 +58,7 @@ public:
 private:
   std::array<glm::vec3, 8> getWorldSpaceFrustumCorners(const glm::mat4x4& proj_view);
   glm::vec3 getFrustumCenter(const std::array<glm::vec3, 8>& corners);
-  glm::vec3 getShadowAnchor(const Camera& main_camera, std::size_t cascade_index);
+  glm::vec3 getShadowAnchor(const ArcballCamera& main_camera, std::size_t cascade_index);
   glm::mat4x4 getLightViewMatrix(const glm::vec3& camera_pos, bool world_space);
   glm::mat4x4 getLightProjMatrix(
     float left, float right, float bottom, float top, float z_near, float z_far);

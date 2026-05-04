@@ -1,20 +1,29 @@
 #pragma once
 
-#include <filesystem>
-
-#include <glm/glm.hpp>
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
-#include <etna/Buffer.hpp>
 #include <etna/BlockingTransferHelper.hpp>
+#include <etna/Buffer.hpp>
+#include <etna/DescriptorSet.hpp>
+#include <etna/Sampler.hpp>
 #include <etna/VertexInput.hpp>
+#include <filesystem>
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/glm.hpp>
+#include <ozz/animation/runtime/animation.h>
+#include <ozz/animation/runtime/sampling_job.h>
+#include <ozz/animation/runtime/skeleton.h>
+#include <ozz/base/containers/vector.h>
+#include <ozz/base/maths/simd_math.h>
+#include <ozz/base/maths/soa_transform.h>
+#include <ozz/base/memory/unique_ptr.h>
 #include <vector>
 
-#include "etna/Sampler.hpp"
-#include "resource/ResourceManager.hpp"
-#include "etna/DescriptorSet.hpp"
+#include "SceneState.hpp"
 #include "resource/Material.hpp"
+#include "resource/ResourceManager.hpp"
 #include "resource/Texture2D.hpp"
+
 
 namespace
 {
@@ -34,6 +43,9 @@ struct StringHash
     return std::hash<std::string>{}(txt);
   }
 };
+
+static inline constexpr uint32_t INVALID_INDEX = ~uint32_t(0);
+
 } // namespace
 
 // Bounds for each render element
@@ -70,36 +82,95 @@ struct HashRenderElement
 struct Bone
 {
   uint32_t matrixId;
-  uint32_t parentNodeId = ~uint32_t(0);
+  uint32_t parentNodeId = INVALID_INDEX;
   std::vector<uint32_t> childrenNodeIds;
-  glm::mat4x4 offsetMatrix;
+  glm::mat4x4 offsetMatrix = glm::identity<glm::mat4x4>();
 };
 
 struct Node
 {
   std::string name;
   uint32_t id;                       // to globalTransform and node arrays
-  uint32_t parentId = ~uint32_t(0);  // to globalTransform and node arrays
+  uint32_t parentId = INVALID_INDEX; // to globalTransform and node arrays
   std::vector<uint32_t> childrenIds; // to globalTransform and node arrays
 
-  glm::mat4x4 localTransform;
+  glm::mat4x4 localTransform = glm::identity<glm::mat4x4>();
   // glm::mat4x4 globalTransform;
 
   std::optional<Bone> boneInfo = std::nullopt;
 };
 
+struct AnimationsWorker
+{
+  ozz::unique_ptr<ozz::animation::SamplingJob::Context> samplingContext;
+
+  ozz::vector<ozz::math::SoaTransform> localTransforms;
+  ozz::vector<ozz::math::Float4x4> worldTransforms;
+
+  const ozz::animation::Animation* currentAnimation = nullptr;
+  SceneState currentState = SceneState::None;
+
+  float currentProgress = 0.0f;
+};
+
 struct Scene
 {
+  glm::mat4x4 transform = glm::identity<glm::mat4x4>();
+
   std::vector<Node> nodes;
   std::vector<uint32_t> boneIds; // to node array
+  uint32_t boneRootNodeId;
   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> nodeNameToIdx;
   std::vector<glm::mat4x4> nodeGlobalTransforms;
   std::vector<glm::mat4x4> boneGlobalTransforms;
+
+  ozz::unique_ptr<ozz::animation::Skeleton> skeleton;
+  std::unordered_map<SceneState, ozz::unique_ptr<ozz::animation::Animation>> animations;
+
+  AnimationsWorker worker;
+
+  bool animationOverrideActive = false;
+
+  void setupWorker()
+  {
+    ETNA_ASSERT(skeleton != nullptr);
+    ETNA_ASSERT(worker.samplingContext == nullptr);
+    worker.samplingContext =
+      ozz::make_unique<ozz::animation::SamplingJob::Context>(skeleton->num_joints());
+    worker.localTransforms.resize(skeleton->num_soa_joints());
+    worker.worldTransforms.resize(skeleton->num_joints());
+  }
+
+  void chooseAnimation(SceneState state)
+  {
+    if (state == SceneState::None)
+    {
+      return;
+    }
+    ETNA_ASSERT(animations.contains(state));
+    if (worker.currentState == state)
+    {
+      return;
+    }
+    worker.currentState = state;
+    worker.currentAnimation = animations.at(state).get();
+    worker.currentProgress = 0.0f;
+  }
 
   __forceinline const Bone& getBone(uint32_t bone_id) const
   {
     ETNA_ASSERT(nodes[bone_id].boneInfo.has_value());
     return nodes[bone_id].boneInfo.value();
+  }
+
+  __forceinline const glm::mat4x4* getWorldTransformPtr(uint32_t matrix_id) const
+  {
+    return reinterpret_cast<const glm::mat4x4*>(&worker.worldTransforms[matrix_id]);
+  }
+
+  __forceinline const glm::mat4x4& getWorldTransformRef(uint32_t matrix_id) const
+  {
+    return reinterpret_cast<const glm::mat4x4&>(worker.worldTransforms[matrix_id]);
   }
 };
 // A mesh is a collection of relems. A scene may have the same mesh
@@ -116,12 +187,16 @@ class AssimpSceneManager
 public:
   AssimpSceneManager();
 
-  void selectScene(std::filesystem::path path);
+  void selectScene(const std::filesystem::path& path, const glm::mat4x4& scene_transform);
+  void loadAnimationForScene(const std::pair<SceneState, std::filesystem::path>& animation);
+
+  void updateScene(float dt, const glm::mat4x4& scene_transform);
 
   void prepareForDraw();
 
   // Every instance is a mesh drawn with a certain transform
-  // NOTE: maybe you can pass some additional data through unused matrix entries?
+  // NOTE: maybe you can pass some additional data through unused matrix
+  // entries?
   std::span<const glm::mat4x4> getInstanceMatrices() { return instanceMatrices; }
   std::span<const std::uint32_t> getInstanceMeshes() { return instanceMeshes; }
 
@@ -137,7 +212,7 @@ public:
   vk::Buffer getIndexBuffer() { return unifiedIbuf.get(); }
 
   const Scene& getScene() const { return processedScene; }
-  void updateSceneMatrices();
+  Scene& getScene() { return processedScene; }
 
   etna::Buffer& getMaterialBuffer() { return unifiedMaterialsbuf; }
 
@@ -154,8 +229,6 @@ public:
   std::vector<etna::Binding> getBindlessBindings() const;
 
   etna::VertexByteStreamFormatDescription getVertexFormatDescription();
-
-  void updateMatrices(const glm::mat4& transform);
 
 public:
   // for now one placeholder for all materials
@@ -227,9 +300,12 @@ private:
   ProcessedInstances processNodes(const aiScene* scene) const;
   // not const - updates Scene
   ProcessedMeshes processMeshes(const aiScene* scene);
+  ozz::vector<ozz::unique_ptr<ozz::animation::Animation>> processAnimations(const aiScene* scene);
   void uploadData(std::span<const Vertex> vertices, std::span<const std::uint32_t> indices);
 
 private:
+  Assimp::Importer importer;
+
   std::unique_ptr<etna::OneShotCmdMgr> oneShotCommands;
   etna::BlockingTransferHelper transferHelper;
 
@@ -258,7 +334,8 @@ private:
   etna::Buffer unifiedMeshesbuf;
 
   std::optional<etna::GpuSharedResource<etna::Buffer>> unifiedInstanceMatricesbuf;
-  // std::optional<etna::GpuSharedResource<etna::Buffer>> unifiedBoneMatricesbuf;
+  // std::optional<etna::GpuSharedResource<etna::Buffer>>
+  // unifiedBoneMatricesbuf;
   std::optional<etna::GpuSharedResource<etna::Buffer>> unifiedBoneMatricesBuf;
   etna::Buffer unifiedInstanceMeshesbuf;
   etna::Buffer unifiedRelemInstanceOffsetsbuf;

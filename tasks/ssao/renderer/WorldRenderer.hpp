@@ -1,29 +1,26 @@
 #pragma once
 
+#include <etna/Buffer.hpp>
+#include <etna/ComputePipeline.hpp>
+#include <etna/GpuSharedResource.hpp>
+#include <etna/GraphicsPipeline.hpp>
+#include <etna/Image.hpp>
+#include <etna/Sampler.hpp>
+#include <glm/glm.hpp>
 #include <memory>
 #include <optional>
 
-#include <etna/Image.hpp>
-#include <etna/Sampler.hpp>
-#include <etna/Buffer.hpp>
-#include <etna/GraphicsPipeline.hpp>
-#include <etna/ComputePipeline.hpp>
-#include <etna/GpuSharedResource.hpp>
-#include <glm/glm.hpp>
+#include "shaders/UniformParams.h"
 
-#include "wsi/Keyboard.hpp"
-
+#include "FramePacket.hpp"
+#include "GBuffer.hpp"
 #include "modules/AmbientOcclusion/SSAOModule.hpp"
 #include "modules/Antialiasing/AntialiasingModule.hpp"
 #include "modules/Light/LightModule.hpp"
-#include "modules/StaticMeshesRender/MeshesRenderModule.hpp"
-
 #include "modules/RenderPacket.hpp"
-
-#include "FramePacket.hpp"
-
-#include "shaders/UniformParams.h"
-#include "GBuffer.hpp"
+#include "modules/StaticMeshesRender/MeshesRenderModule.hpp"
+#include "scene/SceneState.hpp"
+#include "wsi/Keyboard.hpp"
 
 
 class WorldRenderer
@@ -49,7 +46,12 @@ public:
   void rebuildRenderPipelines();
 
   // call only after loadShaders(...), and only once
-  void loadScene(std::filesystem::path path, float near_plane, float far_plane);
+  void loadScene(
+    const std::filesystem::path& scene_path,
+    const std::vector<std::pair<SceneState, std::filesystem::path>>& animations,
+    const glm::mat4x4& scene_transform,
+    float near_plane,
+    float far_plane);
   void loadInfo();
   void loadCubemap();
 

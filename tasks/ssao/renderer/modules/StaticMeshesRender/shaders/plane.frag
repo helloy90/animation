@@ -18,11 +18,18 @@ layout(location = 0) in VS_OUT
 {
   vec4 currentPos;
   vec4 previousPos;
+  vec3 worldPos;
 };
 
 void main()
 {
-  gAlbedo = vec4(0.5, 0.5, 0.5, 1.0);
+  const float size = 1.0;
+  const float edge = size / 32.0;
+  const float faceTone = 0.5;
+  const float edgeTone = 0.5;
+  vec2 gridPos = mod(worldPos.xz, size);
+  gAlbedo = vec4(vec3(min(gridPos.x, gridPos.y) < edge ? faceTone - edgeTone : faceTone), 1.0);
+
   gNormal = vec3(0.0, 1.0, 0.0);
   gMaterial = vec4(0.0, 1.0, 0.0, 1.0);
 

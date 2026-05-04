@@ -1,15 +1,23 @@
 #include "AssimpSceneManager.hpp"
 
+#include <assimp/postprocess.h>
+#include <etna/RenderTargetStates.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <tracy/Tracy.hpp>
+#include <ozz/animation/offline/animation_builder.h>
+#include <ozz/animation/offline/raw_animation.h>
+#include <ozz/animation/offline/raw_skeleton.h>
+#include <ozz/animation/offline/skeleton_builder.h>
+#include <ozz/animation/runtime/local_to_model_job.h>
+#include <ozz/animation/runtime/skeleton_utils.h>
 #include <stb_image.h>
-#include <assimp/postprocess.h>
+#include <string_view>
+#include <tracy/Tracy.hpp>
 
-#include "etna/RenderTargetStates.hpp"
 
 #define GLM_ENABLE_EXPERIMENTAL
-#include "glm/gtx/string_cast.hpp"
+#include <glm/gtx/matrix_decompose.hpp>
+#include <glm/gtx/string_cast.hpp>
 
 #include "render_utils/Utilities.hpp"
 
@@ -57,11 +65,10 @@ AssimpSceneManager::AssimpSceneManager()
 {
 }
 
-void AssimpSceneManager::selectScene(std::filesystem::path path)
+void AssimpSceneManager::selectScene(
+  const std::filesystem::path& path, const glm::mat4x4& scene_transform)
 {
   ZoneScopedN("assimpSelectScene");
-
-  Assimp::Importer importer;
 
   importer.SetPropertyInteger(
     AI_CONFIG_PP_SBP_REMOVE, aiPrimitiveType_LINE | aiPrimitiveType_POINT);
@@ -89,6 +96,7 @@ void AssimpSceneManager::selectScene(std::filesystem::path path)
   instanceMeshes = std::move(instMeshes);
 
   processedScene = std::move(processedSc);
+  processedScene.transform = scene_transform;
 
   auto [verts, inds, relems, groups, bounds] = processMeshes(scene);
 
@@ -96,9 +104,105 @@ void AssimpSceneManager::selectScene(std::filesystem::path path)
   relemsGroups = std::move(groups);
   renderElementsBounds = std::move(bounds);
 
-  updateSceneMatrices();
+  processedScene.setupWorker();
 
   uploadData(verts, inds);
+}
+
+void AssimpSceneManager::loadAnimationForScene(
+  const std::pair<SceneState, std::filesystem::path>& animation)
+{
+  const auto& [state, path] = animation;
+
+  const aiScene* scene = importer.ReadFile(
+    path.string(),
+    aiProcess_CalcTangentSpace | aiProcess_Triangulate | aiProcess_JoinIdenticalVertices |
+      aiProcess_SortByPType | aiProcess_ConvertToLeftHanded | aiProcess_LimitBoneWeights |
+      aiProcess_GenBoundingBoxes | aiProcess_GlobalScale);
+
+  auto animations = processAnimations(scene);
+
+  if (animations.size() > 1)
+  {
+    spdlog::warn("More than one animation was loaded from file, state mapping can be unexpected!");
+  }
+
+  for (auto& anim : animations)
+  {
+    processedScene.animations.emplace(state, std::move(anim));
+  }
+}
+
+void AssimpSceneManager::updateScene(float dt, const glm::mat4x4& scene_transform)
+{
+  processedScene.transform = scene_transform;
+
+  AnimationsWorker& worker = processedScene.worker;
+
+  if (worker.currentAnimation != nullptr)
+  {
+    ozz::animation::SamplingJob samplingJob;
+    samplingJob.ratio = worker.currentProgress;
+    ETNA_ASSERT(0.0f <= samplingJob.ratio && samplingJob.ratio <= 1.0f);
+    ETNA_ASSERT(worker.currentAnimation->num_tracks() == processedScene.skeleton->num_joints());
+
+    samplingJob.animation = worker.currentAnimation;
+    samplingJob.context = worker.samplingContext.get();
+    samplingJob.output = ozz::make_span(worker.localTransforms);
+
+    ETNA_VERIFYF(
+      samplingJob.Validate(),
+      "Error when building sampling job for animation {} !",
+      worker.currentAnimation->name());
+
+    ETNA_VERIFYF(samplingJob.Run(), "Error when running sampling job!");
+
+    worker.currentProgress += dt / worker.currentAnimation->duration();
+
+    if (worker.currentProgress > 1.0f)
+    {
+      worker.currentProgress = 0.0f;
+    }
+  }
+  else
+  {
+    auto restPose = processedScene.skeleton->joint_rest_poses();
+    worker.localTransforms.assign(restPose.begin(), restPose.end());
+  }
+
+  ozz::animation::LocalToModelJob localToModelJob;
+  localToModelJob.skeleton = processedScene.skeleton.get();
+  localToModelJob.input = ozz::make_span(worker.localTransforms);
+  localToModelJob.output = ozz::make_span(worker.worldTransforms);
+  ozz::math::Float4x4 rootTransform;
+  std::memcpy(&rootTransform, &processedScene.transform, sizeof(rootTransform));
+  localToModelJob.root = &rootTransform;
+  ETNA_VERIFYF(localToModelJob.Validate(), "Error when building localToModelJob!");
+  ETNA_VERIFYF(localToModelJob.Run(), "Error when running localToModelJob!");
+
+  std::span<const glm::mat4x4> worldTransforms = std::span(
+    reinterpret_cast<const glm::mat4x4*>(processedScene.worker.worldTransforms.data()),
+    processedScene.worker.worldTransforms.size());
+
+  static std::stack<uint32_t> nodes;
+  nodes.push(processedScene.boneRootNodeId);
+
+  while (!nodes.empty())
+  {
+    uint32_t nodeId = nodes.top();
+    nodes.pop();
+
+    Node& node = processedScene.nodes[nodeId];
+    Bone& bone = node.boneInfo.value();
+
+    processedScene.boneGlobalTransforms[bone.matrixId] =
+      worldTransforms[node.id] * bone.offsetMatrix;
+
+    for (const uint32_t childId : bone.childrenNodeIds)
+    {
+      nodes.push(childId);
+    }
+  }
 }
 
 void AssimpSceneManager::prepareForDraw()
@@ -198,7 +302,6 @@ void AssimpSceneManager::processMaterials(const aiScene* scene, std::filesystem:
     {
       aiString name;
       aiMat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), name);
-
 
       std::filesystem::path path = name.C_Str();
       material.baseColorTexture =
@@ -334,9 +437,8 @@ void AssimpSceneManager::generatePlaceholderMaterial()
 
 AssimpSceneManager::ProcessedInstances AssimpSceneManager::processNodes(const aiScene* scene) const
 {
-
-  // NOTE - maybe super ineffectient because of four traversals, but trying to minimize
-  // reallocations
+  // NOTE - maybe super ineffectient because of four traversals, but trying to
+  // minimize reallocations
   std::size_t nodesCount = 1;
   std::size_t meshesInstancesCount = 0;
   {
@@ -387,7 +489,7 @@ AssimpSceneManager::ProcessedInstances AssimpSceneManager::processNodes(const ai
 
       sceneNode.childrenIds.reserve(node->mNumChildren);
 
-      if (parent != ~uint32_t(0)) [[likely]]
+      if (parent != INVALID_INDEX) [[likely]]
       {
         result.scene.nodes[parent].childrenIds.emplace_back(nodeIdx);
         result.scene.nodeGlobalTransforms[nodeIdx] =
@@ -411,7 +513,7 @@ AssimpSceneManager::ProcessedInstances AssimpSceneManager::processNodes(const ai
       }
     };
 
-    buildImpl(scene->mRootNode, ~uint32_t(0), buildImpl);
+    buildImpl(scene->mRootNode, INVALID_INDEX, buildImpl);
   };
 
   buildProcessedScene();
@@ -534,31 +636,32 @@ AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiSc
 
     result.relems.back().indexCount = indexCount;
 
+    // NOTE - assuming that all meshes have the same skeleton
     if (mesh->HasBones())
     {
-      ETNA_VERIFY(!boneSetupCalled);
-      processedScene.boneGlobalTransforms.resize(mesh->mNumBones, glm::identity<glm::mat4x4>());
-      processedScene.boneIds.reserve(mesh->mNumBones);
+      if (!boneSetupCalled)
+      {
+        processedScene.boneGlobalTransforms.resize(mesh->mNumBones, glm::identity<glm::mat4x4>());
+        processedScene.boneIds.reserve(mesh->mNumBones);
+      }
+
       std::vector<uint32_t> weightOffset(mesh->mNumVertices, 0);
 
       for (uint32_t i = 0; i < mesh->mNumBones; i++)
       {
         const aiBone* bone = mesh->mBones[i];
-        processedScene.nodes[processedScene.nodeNameToIdx.at(bone->mName.C_Str())].boneInfo.emplace(
-          Bone{
-            .matrixId = i,
-            .parentNodeId = ~uint32_t(0),
-            .childrenNodeIds = std::vector<uint32_t>(),
-            .offsetMatrix = mat4_cast(bone->mOffsetMatrix),
-          });
-        processedScene.boneIds.emplace_back(processedScene.nodeNameToIdx.at(bone->mName.C_Str()));
-
-        spdlog::info(
-          "Got bone matrix with idx {} = {}",
-          i,
-          glm::to_string(processedScene.nodes[processedScene.nodeNameToIdx.at(bone->mName.C_Str())]
-                           .boneInfo.value()
-                           .offsetMatrix));
+        if (!boneSetupCalled)
+        {
+          processedScene.nodes[processedScene.nodeNameToIdx.at(bone->mName.C_Str())]
+            .boneInfo.emplace(
+              Bone{
+                .matrixId = i,
+                .parentNodeId = INVALID_INDEX,
+                .childrenNodeIds = std::vector<uint32_t>(),
+                .offsetMatrix = mat4_cast(bone->mOffsetMatrix),
+              });
+          processedScene.boneIds.emplace_back(processedScene.nodeNameToIdx.at(bone->mName.C_Str()));
+        }
 
         std::span weights = std::span(bone->mWeights, bone->mWeights + bone->mNumWeights);
         for (const auto& [vertexId, weight] : weights)
@@ -577,78 +680,224 @@ AssimpSceneManager::ProcessedMeshes AssimpSceneManager::processMeshes(const aiSc
         vertex.boneWeights *= 1.0f / sum;
       }
 
-      boneSetupCalled = true;
-    }
+      if (boneSetupCalled)
+      {
+        continue;
+      }
 
-    auto buildSkeleton = [&scene, this]() -> void {
-      auto buildImpl =
-        [this](const aiNode* node, uint32_t bone_parent, auto& traverse_impl) -> void {
-        Node& sceneNode =
-          processedScene.nodes[processedScene.nodeNameToIdx.at(node->mName.C_Str())];
+      auto buildSkeletonInfo = [&scene, this]() -> void {
+        auto buildImpl =
+          [this](const aiNode* node, uint32_t bone_parent, auto& traverse_impl) -> void {
+          Node& sceneNode =
+            processedScene.nodes[processedScene.nodeNameToIdx.at(node->mName.C_Str())];
 
-        if (sceneNode.boneInfo.has_value())
-        {
-          Bone& bone = sceneNode.boneInfo.value();
-
-          if (bone_parent != ~uint32_t(0)) [[likely]]
+          if (sceneNode.boneInfo.has_value())
           {
-            bone.parentNodeId = bone_parent;
-            processedScene.nodes[bone_parent].boneInfo->childrenNodeIds.emplace_back(sceneNode.id);
+            Bone& bone = sceneNode.boneInfo.value();
+
+            if (bone_parent != INVALID_INDEX) [[likely]]
+            {
+              bone.parentNodeId = bone_parent;
+              processedScene.nodes[bone_parent].boneInfo->childrenNodeIds.emplace_back(
+                sceneNode.id);
+            }
+            else
+            {
+              processedScene.boneRootNodeId = sceneNode.id;
+            }
+
+            bone_parent = processedScene.nodeNameToIdx.at(node->mName.C_Str());
           }
 
-          bone_parent = processedScene.nodeNameToIdx.at(node->mName.C_Str());
-        }
+          for (uint32_t i = 0; i < node->mNumChildren; i++)
+          {
+            traverse_impl(node->mChildren[i], bone_parent, traverse_impl);
+          }
+        };
 
-        for (uint32_t i = 0; i < node->mNumChildren; i++)
-        {
-          traverse_impl(node->mChildren[i], bone_parent, traverse_impl);
-        }
+        buildImpl(scene->mRootNode, INVALID_INDEX, buildImpl);
       };
 
-      buildImpl(scene->mRootNode, ~uint32_t(0), buildImpl);
-    };
+      buildSkeletonInfo();
 
-    buildSkeleton();
+      auto buildOzzSkeleton = [this]() {
+        using RawSkeleton = ozz::animation::offline::RawSkeleton;
+        using Joint = ozz::animation::offline::RawSkeleton::Joint;
+
+        RawSkeleton rawSkeleton;
+        rawSkeleton.roots.resize(1);
+
+        auto buildImpl = [this](Joint& joint, uint32_t bone_node_id, auto& traverse_impl) -> void {
+          Node& boneNode = processedScene.nodes[bone_node_id];
+
+          joint.name = boneNode.name;
+
+          const glm::mat4x4& localTransform = boneNode.localTransform;
+
+          glm::vec3 scale;
+          glm::quat rotation;
+          glm::vec3 translation;
+          glm::vec3 skew;
+          glm::vec4 perspective;
+
+          glm::decompose(localTransform, scale, rotation, translation, skew, perspective);
+
+          joint.transform.translation =
+            ozz::math::Float3(translation.x, translation.y, translation.z);
+          joint.transform.rotation =
+            ozz::math::Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
+          joint.transform.scale = ozz::math::Float3(scale.x, scale.y, scale.z);
+
+          joint.children.resize(boneNode.childrenIds.size());
+          for (uint32_t i = 0; i < boneNode.childrenIds.size(); i++)
+          {
+            traverse_impl(joint.children[i], boneNode.childrenIds[i], traverse_impl);
+          }
+        };
+
+        buildImpl(rawSkeleton.roots[0], 0, buildImpl);
+
+        ETNA_VERIFYF(rawSkeleton.Validate(), "Error after building ozz skeleton!");
+
+        return rawSkeleton;
+      };
+
+      auto rawSkeleton = buildOzzSkeleton();
+
+      ozz::animation::offline::SkeletonBuilder builder;
+
+      processedScene.skeleton = builder(rawSkeleton);
+
+      boneSetupCalled = true;
+    }
   }
 
   return result;
 }
 
-void AssimpSceneManager::updateSceneMatrices()
+ozz::vector<ozz::unique_ptr<ozz::animation::Animation>> AssimpSceneManager::processAnimations(
+  const aiScene* scene)
 {
-  static std::stack<uint32_t> nodes;
-  nodes.push(0);
+  auto createAnimation = [this](const aiAnimation* animation) {
+    using RawAnimation = ozz::animation::offline::RawAnimation;
+    using JointTrack = ozz::animation::offline::RawAnimation::JointTrack;
 
-  while (!nodes.empty())
+    RawAnimation rawAnimation;
+
+    rawAnimation.name = animation->mName.C_Str();
+
+    rawAnimation.duration = animation->mDuration / animation->mTicksPerSecond;
+
+    ozz::animation::Skeleton& skeleton = *processedScene.skeleton;
+
+    rawAnimation.tracks.resize(skeleton.num_joints());
+
+    for (int jointIdx = 0; jointIdx < skeleton.num_joints(); jointIdx++)
+    {
+      std::string_view jointName = skeleton.joint_names()[jointIdx];
+
+      uint32_t currentChannelIdx = INVALID_INDEX;
+      for (uint32_t channelIdx = 0; channelIdx < animation->mNumChannels; channelIdx++)
+      {
+        if (jointName == animation->mChannels[channelIdx]->mNodeName.C_Str())
+        {
+          currentChannelIdx = channelIdx;
+          break;
+        }
+      }
+
+      JointTrack& track = rawAnimation.tracks[jointIdx];
+      if (currentChannelIdx == INVALID_INDEX)
+      {
+        ozz::math::Transform transform = ozz::animation::GetJointLocalRestPose(skeleton, jointIdx);
+
+        track.translations.resize(1);
+        track.translations[0].time = 0.0f;
+        track.translations[0].value = transform.translation;
+
+        track.rotations.resize(1);
+        track.rotations[0].time = 0.0f;
+        track.rotations[0].value = transform.rotation;
+
+        track.scales.resize(1);
+        track.scales[0].time = 0.0f;
+        track.scales[0].value = transform.scale;
+      }
+      else
+      {
+        const aiNodeAnim& channel = *animation->mChannels[currentChannelIdx];
+
+        track.translations.resize(channel.mNumPositionKeys);
+        for (uint32_t posKeyIdx = 0; posKeyIdx < channel.mNumPositionKeys; posKeyIdx++)
+        {
+          const aiVectorKey& key = channel.mPositionKeys[posKeyIdx];
+          const float time = key.mTime / animation->mTicksPerSecond;
+          track.translations[posKeyIdx].time = time;
+          track.translations[posKeyIdx].value =
+            ozz::math::Float3(key.mValue.x, key.mValue.y, key.mValue.z);
+
+          ETNA_ASSERT(time >= 0.0f && time <= rawAnimation.duration);
+          if (posKeyIdx > 0)
+          {
+            ETNA_ASSERT(key.mTime >= channel.mPositionKeys[posKeyIdx - 1].mTime);
+          }
+        }
+
+        track.rotations.resize(channel.mNumRotationKeys);
+        for (uint32_t quatKeyIdx = 0; quatKeyIdx < channel.mNumRotationKeys; quatKeyIdx++)
+        {
+          const aiQuatKey& key = channel.mRotationKeys[quatKeyIdx];
+          const float time = key.mTime / animation->mTicksPerSecond;
+          track.rotations[quatKeyIdx].time = time;
+          track.rotations[quatKeyIdx].value =
+            ozz::math::Quaternion(key.mValue.x, key.mValue.y, key.mValue.z, key.mValue.w);
+
+          ETNA_ASSERT(time >= 0.0f && time <= rawAnimation.duration);
+          if (quatKeyIdx > 0)
+          {
+            ETNA_ASSERT(key.mTime >= channel.mRotationKeys[quatKeyIdx - 1].mTime);
+          }
+        }
+
+        track.scales.resize(channel.mNumScalingKeys);
+        for (uint32_t scaleKeyIdx = 0; scaleKeyIdx < channel.mNumScalingKeys; scaleKeyIdx++)
+        {
+          const aiVectorKey& key = channel.mScalingKeys[scaleKeyIdx];
+          const float time = key.mTime / animation->mTicksPerSecond;
+          track.scales[scaleKeyIdx].time = time;
+          track.scales[scaleKeyIdx].value =
+            ozz::math::Float3(key.mValue.x, key.mValue.y, key.mValue.z);
+
+          ETNA_ASSERT(time >= 0.0f && time <= rawAnimation.duration);
+          if (scaleKeyIdx > 0)
+          {
+            ETNA_ASSERT(key.mTime >= channel.mScalingKeys[scaleKeyIdx - 1].mTime);
+          }
+        }
+      }
+    }
+
+    ETNA_VERIFYF(rawAnimation.Validate(), "Error after building ozz animation!");
+
+    ozz::animation::offline::AnimationBuilder builder;
+
+    ozz::unique_ptr<ozz::animation::Animation> processedAnimation = builder(rawAnimation);
+
+    spdlog::info("Loaded animation {}", animation->mName.C_Str());
+
+    return processedAnimation;
+  };
+
+  ozz::vector<ozz::unique_ptr<ozz::animation::Animation>> animations;
+
+  animations.resize(scene->mNumAnimations);
+
+  for (uint32_t animIdx = 0; animIdx < scene->mNumAnimations; animIdx++)
   {
-    uint32_t nodeId = nodes.top();
-    nodes.pop();
-
-    Node& node = processedScene.nodes[nodeId];
-
-    if (node.parentId != ~uint32_t(0)) [[likely]]
-    {
-      processedScene.nodeGlobalTransforms[node.id] =
-        processedScene.nodeGlobalTransforms[node.parentId] * node.localTransform;
-    }
-    else
-    {
-      processedScene.nodeGlobalTransforms[node.id] = node.localTransform;
-    }
-
-    if (node.boneInfo.has_value())
-    {
-      Bone& bone = node.boneInfo.value();
-
-      processedScene.boneGlobalTransforms[bone.matrixId] =
-        processedScene.nodeGlobalTransforms[node.id] * bone.offsetMatrix;
-    }
-
-    for (const uint32_t childId : node.childrenIds)
-    {
-      nodes.push(childId);
-    }
+    animations[animIdx] = createAnimation(scene->mAnimations[animIdx]);
   }
+
+  return animations;
 }
 
 void AssimpSceneManager::uploadData(
@@ -906,5 +1155,3 @@ etna::VertexByteStreamFormatDescription AssimpSceneManager::getVertexFormatDescr
       },
     }};
 }
-
-void AssimpSceneManager::updateMatrices([[maybe_unused]] const glm::mat4x4& transform) {}

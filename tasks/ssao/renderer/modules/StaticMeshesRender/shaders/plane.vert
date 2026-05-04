@@ -13,6 +13,7 @@ layout(location = 0) out VS_OUT
 {
   vec4 currentPos;
   vec4 previousPos;
+  vec3 worldPos;
 };
 
 out gl_PerVertex
@@ -33,7 +34,7 @@ void main()
     vec3(size, height, -size),
     vec3(size, height, size)};
 
-  vec3 worldPos = pos[gl_VertexIndex];
+  worldPos = pos[gl_VertexIndex];
 
   currentPos = projView * vec4(worldPos, 1.0);
   previousPos = previousProjView * vec4(worldPos, 1.0);

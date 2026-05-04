@@ -185,7 +185,7 @@ void LightModule::displaceLights()
   oneShotCommands->submitAndWait(commandBuffer);
 }
 
-void LightModule::update(const Camera& main_camera, float aspect_ratio)
+void LightModule::update(const ArcballCamera& main_camera, float aspect_ratio)
 {
   shadowCastingDirLights->update(main_camera, aspect_ratio);
 }

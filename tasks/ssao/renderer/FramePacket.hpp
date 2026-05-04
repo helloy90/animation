@@ -1,11 +1,13 @@
 #pragma once
 
-#include <scene/Camera.hpp>
-
+#include <scene/ArcballCamera.hpp>
+#include <scene/SceneState.hpp>
 
 struct FramePacket
 {
-  Camera mainCam;
+  ArcballCamera mainCam;
+  glm::mat4x4 sceneTransform;
+  SceneState currentState;
   float currentTime = 0;
   float deltaTime = 0;
 };

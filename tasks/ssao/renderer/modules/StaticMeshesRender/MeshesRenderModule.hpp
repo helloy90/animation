@@ -1,18 +1,18 @@
 #pragma once
 
 #include <etna/Buffer.hpp>
-#include <etna/GpuSharedResource.hpp>
 #include <etna/ComputePipeline.hpp>
-#include <etna/GraphicsPipeline.hpp>
 #include <etna/DescriptorSet.hpp>
+#include <etna/GpuSharedResource.hpp>
+#include <etna/GraphicsPipeline.hpp>
 #include <etna/RenderTargetStates.hpp>
-
 #include <glm/glm.hpp>
 
-#include "scene/AssimpSceneManager.hpp"
+#include "shaders/MeshesParams.h"
 
 #include "../RenderPacket.hpp"
-#include "shaders/MeshesParams.h"
+#include "scene/AssimpSceneManager.hpp"
+#include "scene/SceneState.hpp"
 
 
 class MeshesRenderModule
@@ -22,7 +22,10 @@ public:
 
   void allocateResources();
   void loadShaders();
-  void loadScene(std::filesystem::path path);
+  void loadScene(
+    const std::filesystem::path& scene_path,
+    const std::vector<std::pair<SceneState, std::filesystem::path>>& animations,
+    const glm::mat4x4& scene_transform);
   void setupPipelines(
     bool wireframe_enabled,
     std::vector<vk::Format> color_attachent_formats,
@@ -31,6 +34,7 @@ public:
 
   void loadSet();
 
+  void update(float dt, const glm::mat4x4& scene_transform, SceneState state);
   void prepareForRender();
 
   void executePlaneRender(

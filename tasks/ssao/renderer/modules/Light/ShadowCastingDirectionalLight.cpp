@@ -1,9 +1,8 @@
 #include "ShadowCastingDirectionalLight.hpp"
 
+#include <etna/GlobalContext.hpp>
 #include <imgui.h>
 #include <tracy/Tracy.hpp>
-
-#include <etna/GlobalContext.hpp>
 
 
 ShadowCastingDirectionalLight::ShadowCastingDirectionalLight(const CreateInfo& info)
@@ -41,11 +40,11 @@ ShadowCastingDirectionalLight::ShadowCastingDirectionalLight(const CreateInfo& i
   });
 }
 
-void ShadowCastingDirectionalLight::update(const Camera& main_camera, float aspect_ratio)
+void ShadowCastingDirectionalLight::update(const ArcballCamera& main_camera, float aspect_ratio)
 {
   ZoneScoped;
 
-  Camera frustumCamera = main_camera;
+  ArcballCamera frustumCamera = main_camera;
 
   for (std::size_t cascade = 0; cascade < shaderInfo.cascadesAmount; cascade++)
   {
@@ -215,7 +214,7 @@ glm::vec3 ShadowCastingDirectionalLight::getFrustumCenter(const std::array<glm::
 }
 
 glm::vec3 ShadowCastingDirectionalLight::getShadowAnchor(
-  const Camera& main_camera, [[maybe_unused]] std::size_t cascade_index)
+  const ArcballCamera& main_camera, std::size_t cascade_index)
 {
   if (cascade_index == 0)
   {
